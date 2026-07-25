@@ -3,15 +3,47 @@ set -eu
 
 umask 077
 
-if [ ! -f "${GROK2API_CONFIG_SOURCE}" ]; then
-  echo "missing config: ${GROK2API_CONFIG_SOURCE}" >&2
-  echo "mount config.yaml to /run/grok2api/config.yaml" >&2
+if [ -n "${RAILWAY_SERVICE_ID:-}" ] && [ -z "${RAILWAY_VOLUME_MOUNT_PATH:-}" ] && [ -z "${GROK2API_STATE_DIR:-}" ]; then
+  echo "Railway deployment requires a persistent Volume (recommended mount path: /data)" >&2
+  echo "attach a Volume or set GROK2API_STATE_DIR to its mount path" >&2
   exit 1
 fi
 
-cp "${GROK2API_CONFIG_SOURCE}" /app/config.yaml
-chown grok2api:grok2api /app/config.yaml
-chmod 0600 /app/config.yaml
+state_dir="${GROK2API_STATE_DIR:-${RAILWAY_VOLUME_MOUNT_PATH:-/app/data}}"
+config_source="${GROK2API_CONFIG_SOURCE:-}"
+active_config=/app/config.yaml
+persistent_config="${state_dir}/config.yaml"
 
-exec su-exec grok2api:grok2api "$@"
+mkdir -p "${state_dir}"
+if [ "$(id -u)" = "0" ]; then
+  chown grok2api:grok2api "${state_dir}"
+fi
 
+if [ -n "${config_source}" ] && [ -f "${config_source}" ]; then
+  # Explicitly mounted configs retain the original Docker Compose behavior.
+  cp "${config_source}" "${active_config}"
+else
+  if [ ! -f "${persistent_config}" ]; then
+    echo "initializing persistent config: ${persistent_config}" >&2
+    /app/grok2api init-config \
+      --template /usr/share/grok2api/config.example.yaml \
+      --output "${persistent_config}" \
+      --state-dir "${state_dir}" \
+      --static-path /app/frontend/dist
+  fi
+  active_config="${persistent_config}"
+fi
+
+chmod 0600 "${active_config}"
+if [ "$(id -u)" = "0" ]; then
+  chown grok2api:grok2api "${active_config}"
+fi
+
+if [ "${1:-}" = "/app/grok2api" ] && [ "${2:-}" != "init-config" ]; then
+  set -- "$@" --config "${active_config}" --listen "0.0.0.0:${PORT:-8000}"
+fi
+
+if [ "$(id -u)" = "0" ]; then
+  exec su-exec grok2api:grok2api "$@"
+fi
+exec "$@"

@@ -1,6 +1,7 @@
 **
 
 !VERSION
+!config.example.yaml
 
 !backend/
 !backend/go.mod

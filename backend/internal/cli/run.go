@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/chenyme/grok2api/backend/internal/app"
@@ -16,6 +19,9 @@ import (
 
 // Run 解析启动参数并运行后端服务。
 func Run(args []string) error {
+	if len(args) > 0 && args[0] == "init-config" {
+		return initializeConfig(args[1:])
+	}
 	options, err := parseOptions(args)
 	if err != nil {
 		return err
@@ -39,6 +45,45 @@ func Run(args []string) error {
 	}
 	defer application.Close()
 	return application.Run(ctx)
+}
+
+func initializeConfig(args []string) error {
+	flags := flag.NewFlagSet("init-config", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	templatePath := flags.String("template", "", "configuration template")
+	outputPath := flags.String("output", "", "persistent configuration output")
+	stateDir := flags.String("state-dir", "", "persistent state directory")
+	staticPath := flags.String("static-path", "", "frontend static directory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *templatePath == "" || *outputPath == "" || *stateDir == "" || *staticPath == "" {
+		return errors.New("init-config 需要 --template、--output、--state-dir 和 --static-path")
+	}
+	publicURL := strings.TrimSpace(os.Getenv("GROK2API_PUBLIC_API_BASE_URL"))
+	if publicURL == "" {
+		if domain := strings.TrimSpace(os.Getenv("RAILWAY_PUBLIC_DOMAIN")); domain != "" {
+			publicURL = "https://" + domain
+		}
+	}
+	return config.InitializePersistentConfig(config.PersistentConfigOptions{
+		TemplatePath: *templatePath, OutputPath: *outputPath, StateDir: *stateDir, StaticPath: *staticPath,
+		PublicAPIBaseURL:        publicURL,
+		DatabaseURL:             firstEnvironment("GROK2API_DATABASE_URL", "DATABASE_URL"),
+		BootstrapAdminUsername:  strings.TrimSpace(os.Getenv("GROK2API_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapAdminPassword:  os.Getenv("GROK2API_BOOTSTRAP_ADMIN_PASSWORD"),
+		JWTSecret:               strings.TrimSpace(os.Getenv("GROK2API_JWT_SECRET")),
+		CredentialEncryptionKey: strings.TrimSpace(os.Getenv("GROK2API_CREDENTIAL_ENCRYPTION_KEY")),
+	})
+}
+
+func firstEnvironment(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type runOptions struct {

@@ -34,3 +34,11 @@ func TestParseOptionsSupportsContainerListenOverride(t *testing.T) {
 		t.Fatal("missing --listen value was accepted")
 	}
 }
+
+func TestFirstEnvironmentUsesExplicitDatabaseOverride(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://railway")
+	t.Setenv("GROK2API_DATABASE_URL", "postgres://explicit")
+	if value := firstEnvironment("GROK2API_DATABASE_URL", "DATABASE_URL"); value != "postgres://explicit" {
+		t.Fatalf("database URL = %q", value)
+	}
+}
