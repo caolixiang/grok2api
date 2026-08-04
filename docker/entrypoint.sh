@@ -13,11 +13,15 @@ state_dir="${GROK2API_STATE_DIR:-${RAILWAY_VOLUME_MOUNT_PATH:-/app/data}}"
 config_source="${GROK2API_CONFIG_SOURCE:-}"
 active_config=/app/config.yaml
 persistent_config="${state_dir}/config.yaml"
+quality_guard_dir=/var/lib/grok2api-quality-guard
 
 mkdir -p "${state_dir}"
+mkdir -p "${quality_guard_dir}"
 if [ "$(id -u)" = "0" ]; then
   chown grok2api:grok2api "${state_dir}"
+  chown grok2api:grok2api "${quality_guard_dir}"
 fi
+chmod 0700 "${quality_guard_dir}"
 
 if [ -n "${config_source}" ] && [ -f "${config_source}" ]; then
   # Explicitly mounted configs retain the original Docker Compose behavior.

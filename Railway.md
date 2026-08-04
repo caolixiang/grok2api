@@ -168,7 +168,9 @@ deployment_topology database=sqlite
 - 否则存在 `DATABASE_URL`：使用该 PostgreSQL DSN。
 - 两者都不存在：使用 SQLite。
 
-`config.yaml` 一旦生成，后续以文件中的 `database.driver` 为准。后来添加或删除 `DATABASE_URL` 不会自动切换数据库，也不会迁移已有数据。
+`config.yaml` 一旦生成，后续通常以文件中的 `database.driver` 为准。后来添加或删除通用的 `DATABASE_URL` 不会自动切换数据库，也不会迁移已有数据。
+
+非空的 `GROK2API_DATABASE_URL` 是例外：它会在每次启动时覆盖 `config.yaml` 中的 PostgreSQL DSN，并强制选择 PostgreSQL。删除该变量后，程序会恢复使用 `config.yaml` 中保存的数据库配置。这个覆盖也不会迁移已有数据，因此只应在数据库已经准备好时使用。
 
 如果尚无业务数据，可以挂载一个全新 Volume 重新初始化。已有数据时必须先完成 SQLite 与 PostgreSQL 之间的数据迁移，再修改卷内配置。
 
