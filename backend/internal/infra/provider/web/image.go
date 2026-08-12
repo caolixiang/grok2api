@@ -375,7 +375,7 @@ func (e *liteUpstreamError) Response() *provider.Response {
 
 func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + prompt})
+		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + prompt}, false)
 		if err != nil {
 			return "", err
 		}
@@ -510,9 +510,9 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 			return nil, err
 		}
 		if parsed.Text.Len() > 0 {
-			parsed.Text.WriteString("\n\n")
+			parsed.appendText("\n\n")
 		}
-		parsed.Text.WriteString(liteImageMarkdown(item))
+		parsed.appendText(liteImageMarkdown(item))
 	}
 	payload := buildOpenAIResult("chat", responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
@@ -540,7 +540,7 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 		if parsed.Text.Len() > 0 {
 			delta = "\n\n" + delta
 		}
-		parsed.Text.WriteString(delta)
+		parsed.appendText(delta)
 		if err := writeStreamDelta(writer, "chat", responseID, model, "text", delta); err != nil {
 			_ = writer.CloseWithError(err)
 			return
