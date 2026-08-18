@@ -1100,7 +1100,11 @@ func TestAdapterScopesStreamIdleTimeoutToConsoleTextStreams(t *testing.T) {
 			if !ok {
 				t.Fatalf("response body = %T, want *releaseBody", response.Body)
 			}
-			_, wrapped := released.ReadCloser.(*providerstreamidle.ReadCloser)
+			idleSource := released.ReadCloser
+			if filtered, ok := idleSource.(*consoleHostedSearchStream); ok {
+				idleSource = filtered.source
+			}
+			_, wrapped := idleSource.(*providerstreamidle.ReadCloser)
 			if wrapped != streaming {
 				t.Fatalf("stream-idle wrapper present = %t, streaming = %t", wrapped, streaming)
 			}

@@ -17,9 +17,24 @@ var (
 )
 
 func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
+	normalized, _, err := normalizeRequestWithRoute(body, spec)
+	return normalized, err
+}
+
+type consoleHostedToolRoute struct {
+	hasXSearch          bool
+	injectedToolTypes   map[string]struct{}
+	clientDeclaredTools map[string]struct{}
+}
+
+func normalizeRequestWithRoute(body []byte, spec ModelSpec) ([]byte, consoleHostedToolRoute, error) {
+	route := consoleHostedToolRoute{
+		injectedToolTypes:   make(map[string]struct{}),
+		clientDeclaredTools: make(map[string]struct{}),
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("解析 Console Responses 请求: %w", err)
+		return nil, route, fmt.Errorf("解析 Console Responses 请求: %w", err)
 	}
 	payload["model"] = spec.UpstreamModel
 	// Console is stateless. Replay the supplied input and silently discard
@@ -39,9 +54,10 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	normalizeReasoning(payload, spec)
 	ensureReasoningInclude(payload)
 	retainedClientTools := normalizeConsoleTools(payload)
-	injectConsoleHostedTools(payload)
+	route = injectConsoleHostedTools(payload)
 	normalizeConsoleToolChoice(payload, retainedClientTools)
-	return json.Marshal(payload)
+	normalized, err := json.Marshal(payload)
+	return normalized, route, err
 }
 
 func normalizeConsoleResponseFormat(payload map[string]any) {
@@ -299,16 +315,25 @@ func normalizeConsoleTools(payload map[string]any) bool {
 // the Console adapter rather than model-name parsing so both explicit
 // Console/grok-* requests and unprefixed models selected for Console behave the
 // same way, including requests converted from Chat Completions or Messages.
-func injectConsoleHostedTools(payload map[string]any) {
+func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
+	route := consoleHostedToolRoute{
+		injectedToolTypes:   make(map[string]struct{}),
+		clientDeclaredTools: make(map[string]struct{}),
+	}
 	tools, _ := payload["tools"].([]any)
 	seenWebSearch := false
 	seenXSearch := false
 	for _, rawTool := range tools {
-		switch strings.ToLower(strings.TrimSpace(toolIdentity(rawTool))) {
+		identity := strings.ToLower(strings.TrimSpace(toolIdentity(rawTool)))
+		switch identity {
 		case "web_search":
 			seenWebSearch = true
 		case "x_search":
 			seenXSearch = true
+		default:
+			if name, ok := strings.CutPrefix(identity, "function:"); ok && name != "" {
+				route.clientDeclaredTools[name] = struct{}{}
+			}
 		}
 	}
 	if !seenWebSearch {
@@ -316,14 +341,18 @@ func injectConsoleHostedTools(payload map[string]any) {
 			"type":                       "web_search",
 			"enable_image_understanding": true,
 		})
+		route.injectedToolTypes["web_search"] = struct{}{}
 	}
 	if !seenXSearch {
 		tools = append(tools, map[string]any{
 			"type":                       "x_search",
 			"enable_video_understanding": true,
 		})
+		route.injectedToolTypes["x_search"] = struct{}{}
 	}
+	route.hasXSearch = true
 	payload["tools"] = tools
+	return route
 }
 
 func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool) {

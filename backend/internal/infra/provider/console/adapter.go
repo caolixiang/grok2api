@@ -114,6 +114,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	body := request.Body
 	var conversationOptions conversation.ResponseOptions
+	var hostedToolRoute consoleHostedToolRoute
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationMessages {
 			body, conversationOptions, err = conversation.ConvertRequestWithOptions(body, request.Model, request.Operation)
@@ -121,7 +122,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			body, err = conversation.ConvertRequest(body, request.Model, request.Operation)
 		}
 		if err == nil {
-			body, err = normalizeRequest(body, spec)
+			body, hostedToolRoute, err = normalizeRequestWithRoute(body, spec)
 		}
 		if err != nil {
 			return invalidConversationResponse(request.Operation, err), nil
@@ -196,6 +197,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 		lease.Release()
 		cancel()
+	}
+	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
+	if responsesOperation && response.StatusCode >= 200 && response.StatusCode < 300 {
+		if err := filterConsoleHostedSearchResponse(response, request.Streaming, hostedToolRoute); err != nil {
+			_ = response.Body.Close()
+			release()
+			return nil, err
+		}
 	}
 	if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 		if request.Streaming && response.StatusCode >= 200 && response.StatusCode < 300 {
