@@ -332,7 +332,7 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 		t.Fatalf("include = %#v", include)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "function:lookup" {
+	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "function:lookup" || toolIdentity(tools[2]) != "x_search" {
 		t.Fatalf("tools = %#v", tools)
 	}
 	webSearch, _ := tools[0].(map[string]any)
@@ -368,7 +368,7 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 		tools, _ := payload["tools"].([]any)
-		if len(tools) != 1 {
+		if len(tools) != 2 || toolIdentity(tools[1]) != "x_search" {
 			t.Fatalf("tools = %#v", tools)
 		}
 		webSearch, _ := tools[0].(map[string]any)
@@ -483,7 +483,7 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	})
 }
 
-func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
+func TestNormalizeRequestInjectsHostedToolsForConsoleCatalog(t *testing.T) {
 	for _, spec := range catalog {
 		t.Run(spec.PublicID, func(t *testing.T) {
 			body, err := normalizeRequest([]byte(`{"model":"public","input":"hello","tool_choice":"required"}`), spec)
@@ -494,14 +494,89 @@ func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload["tools"] != nil || payload["tool_choice"] != nil {
-				t.Fatalf("Console must not inject tools: %#v", payload)
+			tools, _ := payload["tools"].([]any)
+			if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
+				t.Fatalf("Console hosted tools were not injected: %#v", payload)
 			}
 		})
 	}
 }
 
-func TestNormalizeRequestPreservesMultiAgentDefaultsWithoutInjectingTools(t *testing.T) {
+func TestNormalizeRequestInjectsHostedToolsAfterProtocolConversion(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	tests := []struct {
+		name      string
+		operation string
+		body      string
+	}{
+		{
+			name:      "responses explicit Console model",
+			operation: conversation.OperationResponses,
+			body:      `{"model":"Console/grok-4.5","input":"hello"}`,
+		},
+		{
+			name:      "chat completions unprefixed model routed to Console",
+			operation: conversation.OperationChat,
+			body:      `{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name:      "messages explicit Console model",
+			operation: conversation.OperationMessages,
+			body:      `{"model":"Console/grok-4.5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := conversation.ConvertRequest([]byte(test.body), spec.UpstreamModel, test.operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized, err := normalizeRequest(converted, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			tools, _ := payload["tools"].([]any)
+			if payload["model"] != "grok-4.5" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
+				t.Fatalf("Console hosted tools missing after %s conversion: %s", test.operation, normalized)
+			}
+		})
+	}
+}
+
+func TestNormalizeRequestMergesHostedToolsWithoutDuplicates(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.5",
+		"input":"hello",
+		"tools":[
+			{"type":"function","name":"workspace_lookup","parameters":{"type":"object"}},
+			{"type":"x_search","from_date":"2026-08-01"}
+		]
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 3 || toolIdentity(tools[0]) != "function:workspace_lookup" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "web_search" {
+		t.Fatalf("hosted tools were not merged correctly: %#v", tools)
+	}
+}
+
+func TestNormalizeRequestPreservesMultiAgentDefaultsWithHostedTools(t *testing.T) {
 	spec, ok := Resolve("grok-4.20-multi-agent-0309")
 	if !ok {
 		t.Fatal("grok-4.20-multi-agent-0309 missing")
@@ -522,7 +597,8 @@ func TestNormalizeRequestPreservesMultiAgentDefaultsWithoutInjectingTools(t *tes
 		t.Fatalf("multi-agent defaults = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)
-	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || payload["tools"] != nil || payload["tool_choice"] != nil {
+	tools, _ := payload["tools"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
 		t.Fatalf("multi-agent compatibility = %#v", payload)
 	}
 	explicit, err := normalizeRequest([]byte(`{"model":"grok-4.20-multi-agent-0309","input":"hello","reasoning":{"effort":"xhigh"}}`), spec)
@@ -585,7 +661,7 @@ func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
 		t.Fatalf("message parts = %#v", parts)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 1 || toolIdentity(tools[0]) != "web_search" {
+	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
 		t.Fatalf("sanitized tools = %#v", tools)
 	}
 	if tools[0].(map[string]any)["external_web_access"] != nil {

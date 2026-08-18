@@ -39,6 +39,7 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	normalizeReasoning(payload, spec)
 	ensureReasoningInclude(payload)
 	retainedClientTools := normalizeConsoleTools(payload)
+	injectConsoleHostedTools(payload)
 	normalizeConsoleToolChoice(payload, retainedClientTools)
 	return json.Marshal(payload)
 }
@@ -291,6 +292,38 @@ func normalizeConsoleTools(payload map[string]any) bool {
 	}
 	payload["tools"] = result
 	return retainedClientTools
+}
+
+// injectConsoleHostedTools mounts xAI's provider-hosted search tools on every
+// conversation request that has already been routed to Console. This runs in
+// the Console adapter rather than model-name parsing so both explicit
+// Console/grok-* requests and unprefixed models selected for Console behave the
+// same way, including requests converted from Chat Completions or Messages.
+func injectConsoleHostedTools(payload map[string]any) {
+	tools, _ := payload["tools"].([]any)
+	seenWebSearch := false
+	seenXSearch := false
+	for _, rawTool := range tools {
+		switch strings.ToLower(strings.TrimSpace(toolIdentity(rawTool))) {
+		case "web_search":
+			seenWebSearch = true
+		case "x_search":
+			seenXSearch = true
+		}
+	}
+	if !seenWebSearch {
+		tools = append(tools, map[string]any{
+			"type":                       "web_search",
+			"enable_image_understanding": true,
+		})
+	}
+	if !seenXSearch {
+		tools = append(tools, map[string]any{
+			"type":                       "x_search",
+			"enable_video_understanding": true,
+		})
+	}
+	payload["tools"] = tools
 }
 
 func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool) {
