@@ -22,6 +22,10 @@ func (a *Adapter) Definition() provider.Definition {
 			modeldomain.CapabilitySTT,
 			modeldomain.CapabilityRealtime,
 		},
+		ServerTools: []provider.ServerTool{
+			provider.ServerToolWebSearch,
+			provider.ServerToolXSearch,
+		},
 		Quota: provider.QuotaRemoteWindow,
 		Credential: provider.CredentialSurface{
 			AuthType: account.AuthTypeSSO, Import: true,

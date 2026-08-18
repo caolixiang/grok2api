@@ -983,6 +983,16 @@ func (r *Registry) SupportsResponseCompaction(value account.Provider) bool {
 	return ok && definition.Conversation.Compact
 }
 
+// ServerTools returns a copy of the provider-hosted tools advertised for
+// conversation models. The list is metadata only and does not alter requests.
+func (r *Registry) ServerTools(value account.Provider) []ServerTool {
+	definition, ok := r.Definition(value)
+	if !ok {
+		return nil
+	}
+	return append([]ServerTool(nil), definition.ServerTools...)
+}
+
 func (r *Registry) SupportsCredentialRefresh(value account.Provider) bool {
 	definition, ok := r.Definition(value)
 	return ok && definition.Credential.Refresh

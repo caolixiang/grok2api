@@ -114,6 +114,19 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	}
 }
 
+func TestConsoleDefinitionAdvertisesServerTools(t *testing.T) {
+	definition := NewAdapter(Config{}, nil, nil, nil).Definition()
+	want := []provider.ServerTool{provider.ServerToolWebSearch, provider.ServerToolXSearch}
+	if len(definition.ServerTools) != len(want) {
+		t.Fatalf("server tools = %#v, want %#v", definition.ServerTools, want)
+	}
+	for index, value := range want {
+		if definition.ServerTools[index] != value {
+			t.Fatalf("server tools = %#v, want %#v", definition.ServerTools, want)
+		}
+	}
+}
+
 func TestConsoleVoiceErrorIsSanitizedAndPreservesRetryMetadata(t *testing.T) {
 	response := &http.Response{
 		StatusCode: http.StatusTooManyRequests,

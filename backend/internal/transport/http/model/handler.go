@@ -14,6 +14,7 @@ import (
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -70,6 +71,7 @@ type modelResponse struct {
 	Provider          string     `json:"provider"`
 	UpstreamModel     string     `json:"upstreamModel"`
 	Capability        string     `json:"capability"`
+	ServerTools       []string   `json:"serverTools,omitempty"`
 	Enabled           bool       `json:"enabled"`
 	Origin            string     `json:"origin"`
 	AccountIDs        []string   `json:"accountIds"`
@@ -111,7 +113,7 @@ func (h *Handler) list(c *gin.Context) {
 	}
 	items := make([]modelResponse, 0, len(values))
 	for _, value := range values {
-		items = append(items, newModelResponse(value))
+		items = append(items, h.newModelResponseWithTools(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
 }
@@ -132,7 +134,7 @@ func (h *Handler) listGroups(c *gin.Context) {
 	}
 	items := make([]modelGroupResponse, 0, len(values))
 	for _, value := range values {
-		items = append(items, newModelGroupResponse(value))
+		items = append(items, h.newModelGroupResponseWithTools(value))
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
 }
@@ -196,7 +198,7 @@ func (h *Handler) create(c *gin.Context) {
 		h.writeServiceError(c, "modelCreateFailed", err)
 		return
 	}
-	response.Success(c, http.StatusCreated, newModelResponse(value))
+	response.Success(c, http.StatusCreated, h.newModelResponseWithTools(value))
 }
 
 func (h *Handler) batchUpdate(c *gin.Context) {
@@ -357,7 +359,7 @@ func (h *Handler) update(c *gin.Context) {
 		h.writeServiceError(c, "modelUpdateFailed", err)
 		return
 	}
-	response.Success(c, http.StatusOK, newModelResponse(value))
+	response.Success(c, http.StatusOK, h.newModelResponseWithTools(value))
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -388,6 +390,14 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 }
 
 func newModelResponse(value modeldomain.Route) modelResponse {
+	return newModelResponseWithTools(value, nil)
+}
+
+func (h *Handler) newModelResponseWithTools(value modeldomain.Route) modelResponse {
+	return newModelResponseWithTools(value, h.service)
+}
+
+func newModelResponseWithTools(value modeldomain.Route, service *modelapp.Service) modelResponse {
 	manualBinding := len(value.BoundAccountIDs) > 0
 	// Console uses a provider-wide static catalog, so catalog support is known
 	// even when an account capability snapshot predates a newly shipped model.
@@ -399,6 +409,12 @@ func newModelResponse(value modeldomain.Route) modelResponse {
 	}
 	return modelResponse{
 		ID: value.ID, PublicID: modeldomain.ExternalPublicID(value.Provider, value.PublicID), Provider: string(value.Provider), UpstreamModel: modeldomain.DisplayUpstreamModel(value.Provider, value.UpstreamModel), Capability: string(value.Capability),
+		ServerTools: func() []string {
+			if service == nil {
+				return nil
+			}
+			return serverToolNames(service.ServerTools(value))
+		}(),
 		Enabled: value.Enabled, Origin: string(value.Origin), AccountIDs: accountIDs, BindingMode: manualBinding, SupportedAccounts: value.SupportedAccounts,
 		SyncedAccounts: value.SyncedAccounts, TotalAccounts: value.TotalAccounts, CapabilityKnown: capabilityKnown,
 		Available: available, LastSyncedAt: value.LastSyncedAt,
@@ -406,13 +422,32 @@ func newModelResponse(value modeldomain.Route) modelResponse {
 }
 
 func newModelGroupResponse(value modelapp.RouteGroup) modelGroupResponse {
+	return newModelGroupResponseWithTools(value, nil)
+}
+
+func (h *Handler) newModelGroupResponseWithTools(value modelapp.RouteGroup) modelGroupResponse {
+	return newModelGroupResponseWithTools(value, h.service)
+}
+
+func newModelGroupResponseWithTools(value modelapp.RouteGroup, service *modelapp.Service) modelGroupResponse {
 	routes := make([]modelResponse, 0, len(value.Routes))
 	ids := make([]string, 0, len(value.Routes))
 	for _, route := range value.Routes {
-		routes = append(routes, newModelResponse(route))
+		routes = append(routes, newModelResponseWithTools(route, service))
 		ids = append(ids, strconv.FormatUint(route.ID, 10))
 	}
 	return modelGroupResponse{Key: strings.Join(ids, ":"), Routes: routes, EndpointCapabilities: append([]string(nil), value.EndpointCapabilities...)}
+}
+
+func serverToolNames(values []provider.ServerTool) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, string(value))
+	}
+	return result
 }
 
 func parseIDs(values []string) ([]uint64, error) {

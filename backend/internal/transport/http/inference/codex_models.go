@@ -136,6 +136,13 @@ func codexAgentToolsSupported(item modelListItem) bool {
 	return item.Provider == account.ProviderBuild && item.Capability == modeldomain.CapabilityResponses
 }
 
+func codexServerTools(item modelListItem) []string {
+	if item.Provider != account.ProviderConsole || (item.Capability != modeldomain.CapabilityResponses && item.Capability != modeldomain.CapabilityChat) || item.XGrok == nil {
+		return nil
+	}
+	return append([]string(nil), item.XGrok.ServerTools...)
+}
+
 func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 	models := make([]codexModelEntry, 0, len(items))
 	for index, item := range items {
@@ -152,6 +159,8 @@ func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 		}
 		var applyPatchToolType *string
 		toolsSupported := codexAgentToolsSupported(item)
+		serverTools := codexServerTools(item)
+		experimentalSupportedTools := append([]string{}, serverTools...)
 		if toolsSupported {
 			value := "freeform"
 			applyPatchToolType = &value
@@ -184,9 +193,9 @@ func newCodexModelCatalog(items []modelListItem) codexModelCatalog {
 			ContextWindow:                     capability.contextWindow,
 			MaxContextWindow:                  capability.contextWindow,
 			EffectiveContextWindowPercent:     95,
-			ExperimentalSupportedTools:        []string{},
+			ExperimentalSupportedTools:        experimentalSupportedTools,
 			InputModalities:                   modalities,
-			SupportsSearchTool:                false,
+			SupportsSearchTool:                len(serverTools) > 0,
 			UseResponsesLite:                  false,
 		})
 	}

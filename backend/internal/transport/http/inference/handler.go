@@ -194,8 +194,13 @@ type modelListItem struct {
 	Object     string                 `json:"object"`
 	Created    int64                  `json:"created"`
 	OwnedBy    string                 `json:"owned_by"`
+	XGrok      *modelToolMetadata     `json:"x_grok,omitempty"`
 	Provider   account.Provider       `json:"-"`
 	Capability modeldomain.Capability `json:"-"`
+}
+
+type modelToolMetadata struct {
+	ServerTools []string `json:"server_tools"`
 }
 
 func (h *Handler) listModels(c *gin.Context) {
@@ -223,7 +228,7 @@ func (h *Handler) listModels(c *gin.Context) {
 	if hasClientKey {
 		values = filterModelRoutesForClientKey(values, clientKey)
 	}
-	items := newModelListItems(values)
+	items := newModelListItemsWithTools(values, h.models)
 	if allowAliases {
 		items = appendReasoningModelAliases(items)
 	}
@@ -260,6 +265,38 @@ func newModelListItems(values []modeldomain.Route) []modelListItem {
 	return data
 }
 
+func newModelListItemsWithTools(values []modeldomain.Route, models *modelapp.Service) []modelListItem {
+	items := newModelListItems(values)
+	if models == nil {
+		return items
+	}
+	for index := range items {
+		for _, route := range values {
+			if modeldomain.ExternalPublicID(route.Provider, route.PublicID) != items[index].ID {
+				continue
+			}
+			tools := models.ServerTools(route)
+			if len(tools) == 0 {
+				continue
+			}
+			items[index].XGrok = &modelToolMetadata{ServerTools: serverToolNames(tools)}
+			break
+		}
+	}
+	return items
+}
+
+func serverToolNames(values []provider.ServerTool) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, string(value))
+	}
+	return result
+}
+
 // appendReasoningModelAliases expands base models into effort-suffixed aliases using only
 // levels each model actually supports (never a blanket none/low/medium/high/xhigh/max template).
 func appendReasoningModelAliases(items []modelListItem) []modelListItem {
@@ -280,7 +317,7 @@ func appendReasoningModelAliases(items []modelListItem) []modelListItem {
 			seen[aliasID] = true
 			result = append(result, modelListItem{
 				ID: aliasID, Object: "model", Created: item.Created, OwnedBy: item.OwnedBy,
-				Provider: item.Provider, Capability: item.Capability,
+				XGrok: item.XGrok, Provider: item.Provider, Capability: item.Capability,
 			})
 		}
 	}

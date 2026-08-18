@@ -25,6 +25,24 @@ const (
 	QuotaLocalWindow  QuotaKind = "local_window"
 )
 
+// ServerTool identifies a provider-hosted tool that an agent can request
+// without supplying a client function implementation.
+type ServerTool string
+
+const (
+	ServerToolWebSearch ServerTool = "web_search"
+	ServerToolXSearch   ServerTool = "x_search"
+)
+
+func validServerTool(value ServerTool) bool {
+	switch value {
+	case ServerToolWebSearch, ServerToolXSearch:
+		return true
+	default:
+		return false
+	}
+}
+
 // ConversationSurface 描述统一对话 API 在当前 Provider 上的真实能力边界。
 type ConversationSurface struct {
 	Responses       bool
@@ -88,11 +106,14 @@ type Definition struct {
 	ModelNamespace    string
 	ModelCatalog      ModelCatalogKind
 	ModelCapabilities []modeldomain.Capability
-	Quota             QuotaKind
-	Credential        CredentialSurface
-	Conversation      ConversationSurface
-	Media             MediaSurface
-	Inference         InferencePolicy
+	// ServerTools are provider-hosted tools advertised for conversation models.
+	// They are metadata only; request-time injection remains opt-in.
+	ServerTools  []ServerTool
+	Quota        QuotaKind
+	Credential   CredentialSurface
+	Conversation ConversationSurface
+	Media        MediaSurface
+	Inference    InferencePolicy
 }
 
 // DefinitionAdapter 由生产 Provider 实现，用于注册明确且可校验的能力边界。
@@ -104,6 +125,7 @@ type DefinitionAdapter interface {
 // Clone 返回可安全交给调用方读取的副本，避免切片字段被外部修改后污染注册表。
 func (d Definition) Clone() Definition {
 	d.ModelCapabilities = append([]modeldomain.Capability(nil), d.ModelCapabilities...)
+	d.ServerTools = append([]ServerTool(nil), d.ServerTools...)
 	return d
 }
 
@@ -130,6 +152,16 @@ func (d Definition) Validate() error {
 	}
 	if len(d.ModelCapabilities) == 0 {
 		return fmt.Errorf("Provider %s 未声明模型能力", d.Provider)
+	}
+	seenTools := make(map[ServerTool]struct{}, len(d.ServerTools))
+	for _, tool := range d.ServerTools {
+		if !validServerTool(tool) {
+			return fmt.Errorf("Provider %s 声明了无效托管工具 %q", d.Provider, tool)
+		}
+		if _, exists := seenTools[tool]; exists {
+			return fmt.Errorf("Provider %s 重复声明托管工具 %q", d.Provider, tool)
+		}
+		seenTools[tool] = struct{}{}
 	}
 	capabilities := make(map[modeldomain.Capability]struct{}, len(d.ModelCapabilities))
 	for _, capability := range d.ModelCapabilities {

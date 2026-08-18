@@ -142,6 +142,20 @@ func (s *Service) endpointCapabilities(routes []modeldomain.Route) []string {
 	return endpointCapabilitiesForDefinition(routes, definition)
 }
 
+// ServerTools returns provider-hosted tools advertised for a conversation
+// route. Tools are derived from the provider contract rather than persisted
+// per route, so catalog synchronization cannot silently lose the metadata.
+func (s *Service) ServerTools(route modeldomain.Route) []provider.ServerTool {
+	if s.providers == nil {
+		return nil
+	}
+	definition, ok := s.providers.Definition(route.Provider)
+	if !ok || (route.Capability != modeldomain.CapabilityResponses && route.Capability != modeldomain.CapabilityChat) {
+		return nil
+	}
+	return append([]provider.ServerTool(nil), definition.ServerTools...)
+}
+
 func endpointCapabilitiesForDefinition(routes []modeldomain.Route, definition provider.Definition) []string {
 	available := make(map[string]bool, 6)
 	for _, route := range routes {

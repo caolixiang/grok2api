@@ -7,9 +7,12 @@ import (
 	"testing"
 	"time"
 
+	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,6 +27,50 @@ func TestNewModelListItemsDeduplicatesSharedPublicName(t *testing.T) {
 	})
 	if len(items) != 3 || items[0].ID != "grok-shared" || items[1].ID != "grok-chat-fast" || items[2].ID != "grok-imagine-image" {
 		t.Fatalf("model list = %#v", items)
+	}
+}
+
+func TestNewModelListItemsWithToolsAdvertisesConsoleOnly(t *testing.T) {
+	registry := provider.NewRegistry(console.NewAdapter(console.Config{}, nil, nil, nil))
+	models := modelapp.NewService(nil, nil, nil, registry)
+	items := newModelListItemsWithTools([]modeldomain.Route{
+		{PublicID: "Console/grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses},
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+	}, models)
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].XGrok == nil || len(items[0].XGrok.ServerTools) != 2 || items[0].XGrok.ServerTools[0] != "web_search" || items[0].XGrok.ServerTools[1] != "x_search" {
+		t.Fatalf("Console tool metadata = %#v", items[0].XGrok)
+	}
+	reversed := newModelListItemsWithTools([]modeldomain.Route{
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+		{PublicID: "Console/grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses},
+	}, models)
+	if len(reversed) != 1 || reversed[0].XGrok == nil {
+		t.Fatalf("Console metadata was lost behind a shared Build model: %#v", reversed)
+	}
+	buildOnly := newModelListItemsWithTools([]modeldomain.Route{
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+	}, models)
+	if len(buildOnly) != 1 || buildOnly[0].XGrok != nil {
+		t.Fatalf("Build tool metadata = %#v", buildOnly)
+	}
+}
+
+func TestCodexCatalogAdvertisesConsoleServerToolsOnly(t *testing.T) {
+	consoleEntry := newCodexModelCatalog([]modelListItem{{
+		ID: "grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
+		XGrok: &modelToolMetadata{ServerTools: []string{"web_search", "x_search"}},
+	}}).Models[0]
+	if !consoleEntry.SupportsSearchTool || len(consoleEntry.ExperimentalSupportedTools) != 2 || consoleEntry.ExperimentalSupportedTools[0] != "web_search" || consoleEntry.ExperimentalSupportedTools[1] != "x_search" {
+		t.Fatalf("Console search metadata = %#v", consoleEntry)
+	}
+	buildEntry := newCodexModelCatalog([]modelListItem{
+		{ID: "grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+	}).Models[0]
+	if buildEntry.SupportsSearchTool || len(buildEntry.ExperimentalSupportedTools) != 0 {
+		t.Fatalf("Build search metadata = %#v", buildEntry)
 	}
 }
 

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { AudioLines, Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, Mic, MoreHorizontal, Paintbrush, Pencil, Plus, Radio, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
+import { AudioLines, AtSign, Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, Mic, MoreHorizontal, Paintbrush, Pencil, Plus, Radio, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -311,7 +311,7 @@ export function ModelsPage() {
                   <TableCell className="min-w-0">
                     <span className="block truncate text-xs text-muted-foreground" title={model.upstreamModel}>{model.upstreamModel}</span>
                   </TableCell>
-                  <TableCell className="text-center"><ModelCapabilities capabilities={model.capabilities} /></TableCell>
+                  <TableCell className="text-center"><ModelCapabilities capabilities={model.capabilities} serverTools={model.serverTools} /></TableCell>
                   <TableCell className="text-center">{model.enabledState === "enabled" ? <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("common.enabled")}</Badge> : model.enabledState === "disabled" ? <Badge variant="outline" className="text-muted-foreground">{t("common.disabled")}</Badge> : <Badge variant="outline" className="text-amber-700 dark:text-amber-300">{t("models.partiallyEnabled")}</Badge>}</TableCell>
                   <TableCell className="text-center"><ModelProvider provider={model.provider} /></TableCell>
                   <TableCell className="text-center text-xs">
@@ -447,7 +447,7 @@ function ModelProvider({ provider }: { provider: ModelRouteDTO["provider"] }) {
   );
 }
 
-function ModelCapabilities({ capabilities }: { capabilities: ModelDisplayCapability[] }) {
+function ModelCapabilities({ capabilities, serverTools }: { capabilities: ModelDisplayCapability[]; serverTools: ModelRouteDTO["serverTools"] }) {
   const { t } = useTranslation();
   return (
     <span className="mx-auto inline-flex max-w-28 flex-wrap items-center justify-center gap-0.5">
@@ -466,6 +466,22 @@ function ModelCapabilities({ capabilities }: { capabilities: ModelDisplayCapabil
               <div className="font-medium">{label}</div>
               <code className="block text-[10px] text-primary-foreground/70">{metadata.method} {metadata.path}</code>
             </TooltipContent>
+          </Tooltip>
+        );
+      })}
+      {(serverTools ?? []).map((tool) => {
+        const metadata = tool === "web_search"
+          ? { label: "Web Search", icon: Search, color: "text-emerald-600 dark:text-emerald-400" }
+          : { label: "X Search", icon: AtSign, color: "text-sky-600 dark:text-sky-400" };
+        const Icon = metadata.icon;
+        return (
+          <Tooltip key={tool}>
+            <TooltipTrigger asChild>
+              <span tabIndex={0} role="img" aria-label={metadata.label} className={cn("inline-flex size-5 cursor-help items-center justify-center rounded outline-none transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-ring/40", metadata.color)}>
+                <Icon className="size-3.5" strokeWidth={1.8} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{metadata.label}</TooltipContent>
           </Tooltip>
         );
       })}
@@ -494,6 +510,7 @@ type ModelRouteGroup = {
   provider: ModelRouteDTO["provider"];
   upstreamModel: string;
   capabilities: ModelDisplayCapability[];
+  serverTools: NonNullable<ModelRouteDTO["serverTools"]>;
   enabledState: "enabled" | "disabled" | "mixed";
   bindingState: "automatic" | "bound" | "mixed";
   supportedMax: number;
@@ -515,6 +532,7 @@ function newModelRouteGroup(value: ModelRouteGroupDTO, t: TFunction): ModelRoute
   const totalMin = Math.min(...totalValues);
   const totalMax = Math.max(...totalValues);
   const syncedTimes = routes.map((route) => route.lastSyncedAt).filter((value): value is string => Boolean(value)).sort();
+  const serverTools = Array.from(new Set(routes.flatMap((route) => route.serverTools ?? [])));
   return {
     key: value.key,
     routes,
@@ -522,6 +540,7 @@ function newModelRouteGroup(value: ModelRouteGroupDTO, t: TFunction): ModelRoute
     provider: first.provider,
     upstreamModel: first.upstreamModel,
     capabilities: value.endpointCapabilities,
+    serverTools,
     enabledState: enabledCount === routes.length ? "enabled" : enabledCount === 0 ? "disabled" : "mixed",
     bindingState: boundCount === routes.length ? "bound" : boundCount === 0 ? "automatic" : "mixed",
     supportedMax,
