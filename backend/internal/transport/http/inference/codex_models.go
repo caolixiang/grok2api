@@ -137,7 +137,11 @@ func codexAgentToolsSupported(item modelListItem) bool {
 }
 
 func codexServerTools(item modelListItem) []string {
-	if item.Provider != account.ProviderConsole || (item.Capability != modeldomain.CapabilityResponses && item.Capability != modeldomain.CapabilityChat) || item.XGrok == nil {
+	// The public catalog deduplicates shared model IDs across Providers. In
+	// that case the retained item may be represented by Build even though a
+	// matching Console route supplied the x_grok metadata. The metadata is the
+	// authoritative signal here; Build-only entries have no XGrok payload.
+	if (item.Capability != modeldomain.CapabilityResponses && item.Capability != modeldomain.CapabilityChat) || item.XGrok == nil {
 		return nil
 	}
 	return append([]string(nil), item.XGrok.ServerTools...)

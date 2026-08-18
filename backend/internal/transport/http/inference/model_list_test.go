@@ -72,6 +72,17 @@ func TestCodexCatalogAdvertisesConsoleServerToolsOnly(t *testing.T) {
 	if buildEntry.SupportsSearchTool || len(buildEntry.ExperimentalSupportedTools) != 0 {
 		t.Fatalf("Build search metadata = %#v", buildEntry)
 	}
+
+	registry := provider.NewRegistry(console.NewAdapter(console.Config{}, nil, nil, nil))
+	models := modelapp.NewService(nil, nil, nil, registry)
+	shared := newModelListItemsWithTools([]modeldomain.Route{
+		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+		{PublicID: "Console/grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses},
+	}, models)
+	sharedEntry := newCodexModelCatalog(shared).Models[0]
+	if !sharedEntry.SupportsSearchTool || len(sharedEntry.ExperimentalSupportedTools) != 2 || sharedEntry.ExperimentalSupportedTools[1] != "x_search" {
+		t.Fatalf("shared Console search metadata = %#v", sharedEntry)
+	}
 }
 
 func TestFilterModelRoutesForClientKeyUsesProviderAndModelIntersection(t *testing.T) {
