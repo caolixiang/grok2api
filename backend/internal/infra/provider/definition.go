@@ -30,13 +30,14 @@ const (
 type ServerTool string
 
 const (
-	ServerToolWebSearch ServerTool = "web_search"
-	ServerToolXSearch   ServerTool = "x_search"
+	ServerToolWebSearch       ServerTool = "web_search"
+	ServerToolXSearch         ServerTool = "x_search"
+	ServerToolImageGeneration ServerTool = "image_generation"
 )
 
 func validServerTool(value ServerTool) bool {
 	switch value {
-	case ServerToolWebSearch, ServerToolXSearch:
+	case ServerToolWebSearch, ServerToolXSearch, ServerToolImageGeneration:
 		return true
 	default:
 		return false
@@ -107,7 +108,7 @@ type Definition struct {
 	ModelCatalog      ModelCatalogKind
 	ModelCapabilities []modeldomain.Capability
 	// ServerTools are provider-hosted tools advertised for conversation models.
-	// They are metadata only; request-time injection remains opt-in.
+	// Each adapter decides whether request-time use is opt-in or automatically mounted.
 	ServerTools  []ServerTool
 	Quota        QuotaKind
 	Credential   CredentialSurface

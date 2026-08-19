@@ -472,7 +472,9 @@ function ModelCapabilities({ capabilities, serverTools }: { capabilities: ModelD
       {(serverTools ?? []).map((tool) => {
         const metadata = tool === "web_search"
           ? { label: "Web Search", icon: Search, color: "text-emerald-600 dark:text-emerald-400" }
-          : { label: "X Search", icon: AtSign, color: "text-sky-600 dark:text-sky-400" };
+          : tool === "x_search"
+            ? { label: "X Search", icon: AtSign, color: "text-sky-600 dark:text-sky-400" }
+            : { label: "Image Generation", icon: ImageIcon, color: "text-rose-600 dark:text-rose-400" };
         const Icon = metadata.icon;
         return (
           <Tooltip key={tool}>

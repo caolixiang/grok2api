@@ -116,7 +116,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 
 func TestConsoleDefinitionAdvertisesServerTools(t *testing.T) {
 	definition := NewAdapter(Config{}, nil, nil, nil).Definition()
-	want := []provider.ServerTool{provider.ServerToolWebSearch, provider.ServerToolXSearch}
+	want := []provider.ServerTool{provider.ServerToolWebSearch, provider.ServerToolXSearch, provider.ServerToolImageGeneration}
 	if len(definition.ServerTools) != len(want) {
 		t.Fatalf("server tools = %#v, want %#v", definition.ServerTools, want)
 	}
@@ -332,7 +332,7 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 		t.Fatalf("include = %#v", include)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "function:lookup" || toolIdentity(tools[2]) != "x_search" {
+	if len(tools) != 4 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "function:lookup" || toolIdentity(tools[2]) != "x_search" || toolIdentity(tools[3]) != "image_generation" {
 		t.Fatalf("tools = %#v", tools)
 	}
 	webSearch, _ := tools[0].(map[string]any)
@@ -346,6 +346,47 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	var statelessPayload map[string]any
 	if json.Unmarshal(stateless, &statelessPayload) != nil || statelessPayload["store"] != false || statelessPayload["previous_response_id"] != nil || statelessPayload["service_tier"] != nil || statelessPayload["prompt_cache_key"] != nil {
 		t.Fatalf("stateless payload = %#v", statelessPayload)
+	}
+}
+
+func TestNormalizeRequestAlignsImageGenerationSchema(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	for _, action := range []string{"auto", "generate", "edit"} {
+		t.Run(action, func(t *testing.T) {
+			body, err := normalizeRequest([]byte(`{"model":"grok-4.5","input":"draw","tools":[{"type":"image_generation","action":"`+action+`","size":"1024x1024"}]}`), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if json.Unmarshal(body, &payload) != nil {
+				t.Fatal("invalid normalized payload")
+			}
+			tools, _ := payload["tools"].([]any)
+			if len(tools) != 3 {
+				t.Fatalf("tools = %#v", tools)
+			}
+			imageTool, _ := tools[0].(map[string]any)
+			if imageTool["type"] != "image_generation" || imageTool["action"] != action || len(imageTool) != 2 {
+				t.Fatalf("image_generation = %#v", imageTool)
+			}
+		})
+	}
+
+	body, err := normalizeRequest([]byte(`{"model":"grok-4.5","input":"draw","tools":[{"type":"image_generation","action":"invalid","quality":"high"}]}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		t.Fatal("invalid normalized payload")
+	}
+	tools, _ := payload["tools"].([]any)
+	imageTool, _ := tools[0].(map[string]any)
+	if len(imageTool) != 1 || imageTool["type"] != "image_generation" {
+		t.Fatalf("invalid action or unknown fields leaked: %#v", imageTool)
 	}
 }
 
@@ -368,7 +409,7 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 		tools, _ := payload["tools"].([]any)
-		if len(tools) != 2 || toolIdentity(tools[1]) != "x_search" {
+		if len(tools) != 3 || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "image_generation" {
 			t.Fatalf("tools = %#v", tools)
 		}
 		webSearch, _ := tools[0].(map[string]any)
@@ -576,7 +617,7 @@ func TestNormalizeRequestAvoidsClientViewImageToolCollision(t *testing.T) {
 				t.Fatal(err)
 			}
 			tools, _ := payload["tools"].([]any)
-			if len(tools) != 3 {
+			if len(tools) != 4 {
 				t.Fatalf("tools = %#v", tools)
 			}
 			function, _ := tools[0].(map[string]any)
@@ -590,6 +631,10 @@ func TestNormalizeRequestAvoidsClientViewImageToolCollision(t *testing.T) {
 			xSearch, _ := tools[2].(map[string]any)
 			if xSearch["type"] != "x_search" {
 				t.Fatalf("x_search must remain mounted: %#v", xSearch)
+			}
+			imageGeneration, _ := tools[3].(map[string]any)
+			if imageGeneration["type"] != "image_generation" || imageGeneration["action"] != "auto" {
+				t.Fatalf("image_generation must remain mounted: %#v", imageGeneration)
 			}
 			if payload["tool_choice"] != "auto" {
 				t.Fatalf("tool_choice = %#v", payload["tool_choice"])
@@ -610,8 +655,12 @@ func TestNormalizeRequestInjectsHostedToolsForConsoleCatalog(t *testing.T) {
 				t.Fatal(err)
 			}
 			tools, _ := payload["tools"].([]any)
-			if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
+			if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "image_generation" || payload["tool_choice"] != "auto" {
 				t.Fatalf("Console hosted tools were not injected: %#v", payload)
+			}
+			imageTool, _ := tools[2].(map[string]any)
+			if imageTool["action"] != "auto" {
+				t.Fatalf("image_generation default = %#v", imageTool)
 			}
 		})
 	}
@@ -658,7 +707,7 @@ func TestNormalizeRequestInjectsHostedToolsAfterProtocolConversion(t *testing.T)
 				t.Fatal(err)
 			}
 			tools, _ := payload["tools"].([]any)
-			if payload["model"] != "grok-4.5" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
+			if payload["model"] != "grok-4.5" || len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "image_generation" || payload["tool_choice"] != "auto" {
 				t.Fatalf("Console hosted tools missing after %s conversion: %s", test.operation, normalized)
 			}
 		})
@@ -690,7 +739,7 @@ func TestNormalizeRequestPreservesSearchSchemaAfterChatConversion(t *testing.T) 
 		t.Fatal(err)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 2 {
+	if len(tools) != 3 {
 		t.Fatalf("tools = %#v", tools)
 	}
 	webSearch, _ := tools[0].(map[string]any)
@@ -726,7 +775,7 @@ func TestNormalizeRequestMergesHostedToolsWithoutDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 3 || toolIdentity(tools[0]) != "function:workspace_lookup" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "web_search" {
+	if len(tools) != 4 || toolIdentity(tools[0]) != "function:workspace_lookup" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "web_search" || toolIdentity(tools[3]) != "image_generation" {
 		t.Fatalf("hosted tools were not merged correctly: %#v", tools)
 	}
 }
@@ -753,7 +802,7 @@ func TestNormalizeRequestPreservesMultiAgentDefaultsWithHostedTools(t *testing.T
 	}
 	include, _ := payload["include"].([]any)
 	tools, _ := payload["tools"].([]any)
-	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || payload["tool_choice"] != "auto" {
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" || len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "image_generation" || payload["tool_choice"] != "auto" {
 		t.Fatalf("multi-agent compatibility = %#v", payload)
 	}
 	metadata := &provider.NormalizedRequestMetadata{}
@@ -848,7 +897,7 @@ func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
 		t.Fatalf("message parts = %#v", parts)
 	}
 	tools, _ := payload["tools"].([]any)
-	if len(tools) != 2 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" {
+	if len(tools) != 3 || toolIdentity(tools[0]) != "web_search" || toolIdentity(tools[1]) != "x_search" || toolIdentity(tools[2]) != "image_generation" {
 		t.Fatalf("sanitized tools = %#v", tools)
 	}
 	if tools[0].(map[string]any)["external_web_access"] != nil {

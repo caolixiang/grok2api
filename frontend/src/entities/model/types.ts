@@ -4,7 +4,7 @@ export type ModelRouteDTO = {
   provider: "grok_build" | "grok_web" | "grok_console";
   upstreamModel: string;
   capability: "responses" | "chat" | "image" | "image_edit" | "video" | "tts" | "stt" | "realtime";
-  serverTools?: Array<"web_search" | "x_search">;
+  serverTools?: Array<"web_search" | "x_search" | "image_generation">;
   origin: "catalog" | "discovered" | "manual";
   enabled: boolean;
   accountIds: string[];

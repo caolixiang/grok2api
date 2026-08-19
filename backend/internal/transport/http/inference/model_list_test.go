@@ -40,7 +40,7 @@ func TestNewModelListItemsWithToolsAdvertisesConsoleOnly(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %#v", items)
 	}
-	if items[0].XGrok == nil || len(items[0].XGrok.ServerTools) != 2 || items[0].XGrok.ServerTools[0] != "web_search" || items[0].XGrok.ServerTools[1] != "x_search" {
+	if items[0].XGrok == nil || len(items[0].XGrok.ServerTools) != 3 || items[0].XGrok.ServerTools[0] != "web_search" || items[0].XGrok.ServerTools[1] != "x_search" || items[0].XGrok.ServerTools[2] != "image_generation" {
 		t.Fatalf("Console tool metadata = %#v", items[0].XGrok)
 	}
 	reversed := newModelListItemsWithTools([]modeldomain.Route{
@@ -61,9 +61,9 @@ func TestNewModelListItemsWithToolsAdvertisesConsoleOnly(t *testing.T) {
 func TestCodexCatalogAdvertisesConsoleServerToolsOnly(t *testing.T) {
 	consoleEntry := newCodexModelCatalog([]modelListItem{{
 		ID: "grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
-		XGrok: &modelToolMetadata{ServerTools: []string{"web_search", "x_search"}},
+		XGrok: &modelToolMetadata{ServerTools: []string{"web_search", "x_search", "image_generation"}},
 	}}).Models[0]
-	if !consoleEntry.SupportsSearchTool || len(consoleEntry.ExperimentalSupportedTools) != 2 || consoleEntry.ExperimentalSupportedTools[0] != "web_search" || consoleEntry.ExperimentalSupportedTools[1] != "x_search" {
+	if !consoleEntry.SupportsSearchTool || len(consoleEntry.ExperimentalSupportedTools) != 3 || consoleEntry.ExperimentalSupportedTools[0] != "web_search" || consoleEntry.ExperimentalSupportedTools[1] != "x_search" || consoleEntry.ExperimentalSupportedTools[2] != "image_generation" {
 		t.Fatalf("Console search metadata = %#v", consoleEntry)
 	}
 	buildEntry := newCodexModelCatalog([]modelListItem{
@@ -80,7 +80,7 @@ func TestCodexCatalogAdvertisesConsoleServerToolsOnly(t *testing.T) {
 		{PublicID: "Console/grok-4.5", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses},
 	}, models)
 	sharedEntry := newCodexModelCatalog(shared).Models[0]
-	if !sharedEntry.SupportsSearchTool || len(sharedEntry.ExperimentalSupportedTools) != 2 || sharedEntry.ExperimentalSupportedTools[1] != "x_search" {
+	if !sharedEntry.SupportsSearchTool || len(sharedEntry.ExperimentalSupportedTools) != 3 || sharedEntry.ExperimentalSupportedTools[2] != "image_generation" {
 		t.Fatalf("shared Console search metadata = %#v", sharedEntry)
 	}
 }

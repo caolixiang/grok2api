@@ -377,7 +377,20 @@ func normalizeConsoleTools(payload map[string]any) (bool, error) {
 			}
 			result = append(result, clean)
 			retainedClientTools = true
-		case "mcp", "shell", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
+		case "image_generation":
+			// Match the Console Responses contract: image generation accepts only
+			// the optional auto/generate/edit action. Unknown fields are dropped so
+			// clients cannot accidentally forward an incompatible Images API schema.
+			clean := map[string]any{"type": "image_generation"}
+			if action, _ := tool["action"].(string); action != "" {
+				switch action = strings.TrimSpace(action); action {
+				case "auto", "generate", "edit":
+					clean["action"] = action
+				}
+			}
+			result = append(result, clean)
+			retainedClientTools = true
+		case "mcp", "shell", "collections_search", "file_search", "code_execution", "code_interpreter":
 			// These are native xAI Responses tool variants. Keep their payloads,
 			// while namespace/tool_search remain client-side abstractions and are
 			// intentionally omitted instead of causing an upstream 400.
@@ -476,7 +489,7 @@ func parseConsoleSearchTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
 }
 
-// injectConsoleHostedTools mounts xAI's provider-hosted search tools on every
+// injectConsoleHostedTools mounts xAI's provider-hosted tools on every
 // conversation request that has already been routed to Console. This runs in
 // the Console adapter rather than model-name parsing so both explicit
 // Console/grok-* requests and unprefixed models selected for Console behave the
@@ -489,6 +502,7 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 	tools, _ := payload["tools"].([]any)
 	seenWebSearch := false
 	seenXSearch := false
+	seenImageGeneration := false
 	for _, rawTool := range tools {
 		identity := strings.ToLower(strings.TrimSpace(toolIdentity(rawTool)))
 		switch identity {
@@ -496,6 +510,8 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 			seenWebSearch = true
 		case "x_search":
 			seenXSearch = true
+		case "image_generation":
+			seenImageGeneration = true
 		default:
 			if name, ok := strings.CutPrefix(identity, "function:"); ok && name != "" {
 				route.clientDeclaredTools[name] = struct{}{}
@@ -515,6 +531,13 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 			"enable_video_understanding": true,
 		})
 		route.injectedToolTypes["x_search"] = struct{}{}
+	}
+	if !seenImageGeneration {
+		tools = append(tools, map[string]any{
+			"type":   "image_generation",
+			"action": "auto",
+		})
+		route.injectedToolTypes["image_generation"] = struct{}{}
 	}
 	route.hasXSearch = true
 	payload["tools"] = tools
