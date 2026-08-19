@@ -324,7 +324,7 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 		t.Fatalf("max_output_tokens = %#v", payload["max_output_tokens"])
 	}
 	reasoning, _ := payload["reasoning"].(map[string]any)
-	if reasoning["effort"] != "xhigh" {
+	if reasoning["effort"] != "xhigh" || reasoning["summary"] != "detailed" {
 		t.Fatalf("reasoning = %#v", reasoning)
 	}
 	include, _ := payload["include"].([]any)
@@ -797,7 +797,8 @@ func TestNormalizeRequestPreservesMultiAgentDefaultsWithHostedTools(t *testing.T
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["max_output_tokens"] != float64(1_000_000) || payload["reasoning"] != nil || payload["store"] != false {
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if payload["max_output_tokens"] != float64(1_000_000) || reasoning["summary"] != "detailed" || reasoning["effort"] != nil || payload["store"] != false {
 		t.Fatalf("multi-agent defaults = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)
@@ -954,8 +955,12 @@ func TestNormalizeRequestStripsUnsupportedGrok420ReasoningEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload = nil
-	if json.Unmarshal(effortOnly, &payload) != nil || payload["reasoning"] != nil {
-		t.Fatalf("effort-only reasoning must be removed: %#v", payload)
+	if json.Unmarshal(effortOnly, &payload) != nil {
+		t.Fatal("failed to decode effort-only request")
+	}
+	reasoning, _ = payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != nil || reasoning["summary"] != "detailed" {
+		t.Fatalf("unsupported effort must be replaced by the summary default: %#v", payload)
 	}
 
 	withoutEffort, err := normalizeRequest([]byte(`{
@@ -969,8 +974,65 @@ func TestNormalizeRequestStripsUnsupportedGrok420ReasoningEffort(t *testing.T) {
 	if err := json.Unmarshal(withoutEffort, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["reasoning"] != nil {
-		t.Fatalf("base model request should retain the upstream default: %#v", payload)
+	reasoning, _ = payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != nil || reasoning["summary"] != "detailed" {
+		t.Fatalf("base model request should request a detailed reasoning summary: %#v", payload)
+	}
+}
+
+func TestNormalizeRequestDefaultsAndPreservesConsoleReasoningSummary(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	tests := []struct {
+		name        string
+		operation   string
+		body        string
+		wantEffort  string
+		wantSummary string
+	}{
+		{
+			name:        "responses defaults",
+			operation:   conversation.OperationResponses,
+			body:        `{"model":"public","input":"hello"}`,
+			wantEffort:  "medium",
+			wantSummary: "detailed",
+		},
+		{
+			name:        "responses preserves explicit summary",
+			operation:   conversation.OperationResponses,
+			body:        `{"model":"public","input":"hello","reasoning":{"effort":"high","summary":"concise"}}`,
+			wantEffort:  "high",
+			wantSummary: "concise",
+		},
+		{
+			name:        "chat completions gets summary",
+			operation:   conversation.OperationChat,
+			body:        `{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`,
+			wantEffort:  "high",
+			wantSummary: "detailed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := conversation.ConvertRequest([]byte(test.body), spec.UpstreamModel, test.operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized, err := normalizeRequest(converted, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, _ := payload["reasoning"].(map[string]any)
+			if reasoning["effort"] != test.wantEffort || reasoning["summary"] != test.wantSummary {
+				t.Fatalf("reasoning = %#v", reasoning)
+			}
+		})
 	}
 }
 
