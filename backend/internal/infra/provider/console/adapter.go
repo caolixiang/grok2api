@@ -101,6 +101,9 @@ func (a *Adapter) MarshalCredentials(values []provider.CredentialSeed) ([]byte, 
 }
 
 func (a *Adapter) ForwardResponse(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	if request.NormalizedMetadata != nil {
+		*request.NormalizedMetadata = provider.NormalizedRequestMetadata{}
+	}
 	if request.Method != http.MethodPost || request.Path != "/responses" {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"type": "invalid_request_error", "message": "Grok Console 仅支持 POST /responses"}}), nil
 	}
@@ -118,11 +121,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationMessages {
 			body, conversationOptions, err = conversation.ConvertRequestWithOptions(body, request.Model, request.Operation)
+			if err == nil && conversationOptions.ReasoningEffortSet && request.NormalizedMetadata != nil {
+				request.NormalizedMetadata.ReasoningEffort = conversationOptions.ReasoningEffort
+			}
 		} else {
 			body, err = conversation.ConvertRequest(body, request.Model, request.Operation)
 		}
 		if err == nil {
-			body, hostedToolRoute, err = normalizeRequestWithRoute(body, spec)
+			body, hostedToolRoute, err = normalizeRequestWithRouteAndMetadata(body, spec, request.NormalizedMetadata)
 		}
 		if err != nil {
 			return invalidConversationResponse(request.Operation, err), nil
