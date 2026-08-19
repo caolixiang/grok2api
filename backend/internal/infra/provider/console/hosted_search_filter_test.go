@@ -91,3 +91,61 @@ func TestFilterConsoleHostedSearchResponseStream(t *testing.T) {
 		t.Fatalf("stream content length = %d header=%q", response.ContentLength, response.Header.Get("Content-Length"))
 	}
 }
+
+func TestFilterConsoleHostedSearchResponseRestoresAliasedViewImage(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	_, route, err := normalizeRequestWithRoute([]byte(`{
+		"model":"Console/grok-4.5",
+		"input":"inspect an image",
+		"tools":[{"type":"function","name":"view_image","parameters":{"type":"object"}}]
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.aliasedViewImage {
+		t.Fatal("view_image alias route was not recorded")
+	}
+
+	t.Run("json", func(t *testing.T) {
+		response := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{
+			"id":"resp_1",
+			"tools":[{"type":"function","name":"view_image_local_grok2api","parameters":{"type":"object"}}],
+			"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"view_image_local_grok2api","arguments":"{}"}]
+		}`))}
+		if err := filterConsoleHostedSearchResponse(response, false, route); err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if strings.Contains(text, consoleViewImageToolAlias) || strings.Count(text, `"name":"view_image"`) != 2 {
+			t.Fatalf("view_image alias was not restored: %s", text)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		source := strings.Join([]string{
+			`event: response.output_item.added`,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"view_image_local_grok2api","arguments":"{}"}}`, "",
+			`event: response.completed`,
+			`data: {"type":"response.completed","response":{"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"view_image_local_grok2api","arguments":"{}"}]}}`, "", "",
+		}, "\n")
+		response := &http.Response{Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(source))}
+		if err := filterConsoleHostedSearchResponse(response, true, route); err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if strings.Contains(text, consoleViewImageToolAlias) || strings.Count(text, `"name":"view_image"`) != 2 {
+			t.Fatalf("stream view_image alias was not restored:\n%s", text)
+		}
+	})
+}

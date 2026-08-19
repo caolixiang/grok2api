@@ -17,6 +17,13 @@ var (
 	resetDurationPattern = regexp.MustCompile(`(?i)(\d+)\s*([dhms])`)
 )
 
+const (
+	maxConsoleWebSearchDomains = 5
+	maxConsoleXSearchHandles   = 20
+	consoleViewImageToolName   = "view_image"
+	consoleViewImageToolAlias  = "view_image_local_grok2api"
+)
+
 func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	return normalizeRequestWithMetadata(body, spec, nil)
 }
@@ -28,6 +35,7 @@ func normalizeRequestWithMetadata(body []byte, spec ModelSpec, metadata *provide
 
 type consoleHostedToolRoute struct {
 	hasXSearch          bool
+	aliasedViewImage    bool
 	injectedToolTypes   map[string]struct{}
 	clientDeclaredTools map[string]struct{}
 }
@@ -65,9 +73,13 @@ func normalizeRequestWithRouteAndMetadata(body []byte, spec ModelSpec, metadata 
 	normalizeReasoning(payload, spec)
 	updateConsoleReasoningMetadata(payload, spec, requestedEffort, metadata)
 	ensureReasoningInclude(payload)
-	retainedClientTools := normalizeConsoleTools(payload)
+	retainedClientTools, err := normalizeConsoleTools(payload)
+	if err != nil {
+		return nil, route, err
+	}
 	route = injectConsoleHostedTools(payload)
 	normalizeConsoleToolChoice(payload, retainedClientTools)
+	aliasConsoleReservedFunctionTools(payload, &route)
 	normalized, err := json.Marshal(payload)
 	return normalized, route, err
 }
@@ -262,23 +274,20 @@ func ensureReasoningInclude(payload map[string]any) {
 	payload["include"] = result
 }
 
-func normalizeConsoleTools(payload map[string]any) bool {
+func normalizeConsoleTools(payload map[string]any) (bool, error) {
 	value, exists := payload["tools"]
 	if !exists || value == nil {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return false, nil
 	}
 	tools, ok := value.([]any)
 	if !ok {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return false, nil
 	}
-	hasClientViewImage := hasConsoleFunctionTool(tools, "view_image")
 	result := make([]any, 0, len(tools))
 	retainedClientTools := false
-	for _, rawTool := range tools {
+	for index, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
 		if !ok {
 			continue
@@ -286,45 +295,72 @@ func normalizeConsoleTools(payload map[string]any) bool {
 		typeName, _ := tool["type"].(string)
 		switch strings.ToLower(strings.TrimSpace(typeName)) {
 		case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
-			// xAI equips web_search with a server-side tool also named view_image
-			// when image understanding is enabled. Prefer the client's function of
-			// that name so Codex can still inspect local files without mgw rejecting
-			// the request as a duplicate tool definition.
-			clean := map[string]any{"type": "web_search", "enable_image_understanding": !hasClientViewImage}
-			if enabled, ok := tool["enable_image_understanding"].(bool); ok && !hasClientViewImage {
+			clean := map[string]any{"type": "web_search", "enable_image_understanding": true}
+			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
 				clean["enable_image_understanding"] = enabled
 			}
-			// Forward the image-search toggle (enable_image_search) so clients
-			// can explicitly enable/disable it; absent when not requested.
 			if enabled, ok := tool["enable_image_search"].(bool); ok {
 				clean["enable_image_search"] = enabled
+			}
+			allowed, excluded, err := normalizeConsoleWebSearchDomains(tool, index)
+			if err != nil {
+				return false, err
+			}
+			if len(allowed) > 0 {
+				clean["allowed_domains"] = allowed
+			}
+			if len(excluded) > 0 {
+				clean["excluded_domains"] = excluded
 			}
 			result = append(result, clean)
 		case "x_search":
 			clean := map[string]any{"type": "x_search", "enable_video_understanding": true}
+			allowed, err := normalizeConsoleStringList(tool["allowed_x_handles"], maxConsoleXSearchHandles, fmt.Sprintf("tools[%d].allowed_x_handles", index))
+			if err != nil {
+				return false, err
+			}
+			excluded, err := normalizeConsoleStringList(tool["excluded_x_handles"], maxConsoleXSearchHandles, fmt.Sprintf("tools[%d].excluded_x_handles", index))
+			if err != nil {
+				return false, err
+			}
+			if len(allowed) > 0 && len(excluded) > 0 {
+				return false, fmt.Errorf("tools[%d] 不能同时设置 allowed_x_handles 和 excluded_x_handles", index)
+			}
+			if len(allowed) > 0 {
+				clean["allowed_x_handles"] = allowed
+			}
+			if len(excluded) > 0 {
+				clean["excluded_x_handles"] = excluded
+			}
+			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
+				clean["enable_image_understanding"] = enabled
+			}
 			if enabled, ok := tool["enable_video_understanding"].(bool); ok {
 				clean["enable_video_understanding"] = enabled
 			}
-			// Forward the X-search time bounds (from_date/to_date, YYYY-MM-DD).
-			// Invalid formats and empty strings are dropped; if from_date is
-			// later than to_date both are dropped to avoid an upstream 400.
+			parsedBounds := make(map[string]time.Time, 2)
 			for _, field := range []string{"from_date", "to_date"} {
-				text, ok := tool[field].(string)
-				if !ok || text == "" {
+				text, exists := tool[field]
+				if !exists || text == nil {
 					continue
 				}
-				if date, err := time.Parse("2006-01-02", text); err == nil && date.Format("2006-01-02") == text {
-					clean[field] = text
+				value, ok := text.(string)
+				if !ok || strings.TrimSpace(value) == "" {
+					return false, fmt.Errorf("tools[%d].%s 必须是 ISO 8601 时间字符串", index, field)
 				}
+				value = strings.TrimSpace(value)
+				parsed, err := parseConsoleSearchTime(value)
+				if err != nil {
+					return false, fmt.Errorf("tools[%d].%s 必须是 ISO 8601 时间字符串", index, field)
+				}
+				clean[field] = value
+				parsedBounds[field] = parsed
 			}
-			from, hasFrom := clean["from_date"].(string)
-			to, hasTo := clean["to_date"].(string)
+			from, hasFrom := parsedBounds["from_date"]
+			to, hasTo := parsedBounds["to_date"]
 			if hasFrom && hasTo {
-				fromDate, _ := time.Parse("2006-01-02", from)
-				toDate, _ := time.Parse("2006-01-02", to)
-				if fromDate.After(toDate) {
-					delete(clean, "from_date")
-					delete(clean, "to_date")
+				if from.After(to) {
+					return false, fmt.Errorf("tools[%d].from_date 不能晚于 to_date", index)
 				}
 			}
 			result = append(result, clean)
@@ -351,11 +387,93 @@ func normalizeConsoleTools(payload map[string]any) bool {
 	}
 	if len(result) == 0 {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return false, nil
 	}
 	payload["tools"] = result
-	return retainedClientTools
+	return retainedClientTools, nil
+}
+
+func normalizeConsoleWebSearchDomains(tool map[string]any, index int) ([]string, []string, error) {
+	filters, _ := tool["filters"].(map[string]any)
+	allowed, err := normalizeConsoleMergedStringList(tool["allowed_domains"], filters["allowed_domains"], maxConsoleWebSearchDomains, fmt.Sprintf("tools[%d].allowed_domains", index))
+	if err != nil {
+		return nil, nil, err
+	}
+	excluded, err := normalizeConsoleMergedStringList(tool["excluded_domains"], filters["excluded_domains"], maxConsoleWebSearchDomains, fmt.Sprintf("tools[%d].excluded_domains", index))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(allowed) > 0 && len(excluded) > 0 {
+		return nil, nil, fmt.Errorf("tools[%d] 不能同时设置 allowed_domains 和 excluded_domains", index)
+	}
+	return allowed, excluded, nil
+}
+
+func normalizeConsoleMergedStringList(topLevel, nested any, limit int, field string) ([]string, error) {
+	top, err := normalizeConsoleStringList(topLevel, limit, field)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := normalizeConsoleStringList(nested, limit, field)
+	if err != nil {
+		return nil, err
+	}
+	if len(top) > 0 && len(inner) > 0 && !equalConsoleStringLists(top, inner) {
+		return nil, fmt.Errorf("%s 的顶层声明与 filters 声明冲突", field)
+	}
+	if len(top) > 0 {
+		return top, nil
+	}
+	return inner, nil
+}
+
+func normalizeConsoleStringList(value any, limit int, field string) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var raw []any
+	switch typed := value.(type) {
+	case []any:
+		raw = typed
+	case []string:
+		raw = make([]any, len(typed))
+		for index := range typed {
+			raw[index] = typed[index]
+		}
+	default:
+		return nil, fmt.Errorf("%s 必须是字符串数组", field)
+	}
+	if limit > 0 && len(raw) > limit {
+		return nil, fmt.Errorf("%s 不能超过 %d 项", field, limit)
+	}
+	result := make([]string, 0, len(raw))
+	for index, item := range raw {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("%s[%d] 必须是非空字符串", field, index)
+		}
+		result = append(result, strings.TrimSpace(text))
+	}
+	return result, nil
+}
+
+func equalConsoleStringLists(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func parseConsoleSearchTime(value string) (time.Time, error) {
+	if parsed, err := time.Parse("2006-01-02", value); err == nil && parsed.Format("2006-01-02") == value {
+		return parsed, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
 }
 
 // injectConsoleHostedTools mounts xAI's provider-hosted search tools on every
@@ -369,7 +487,6 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 		clientDeclaredTools: make(map[string]struct{}),
 	}
 	tools, _ := payload["tools"].([]any)
-	hasClientViewImage := hasConsoleFunctionTool(tools, "view_image")
 	seenWebSearch := false
 	seenXSearch := false
 	for _, rawTool := range tools {
@@ -388,7 +505,7 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 	if !seenWebSearch {
 		tools = append(tools, map[string]any{
 			"type":                       "web_search",
-			"enable_image_understanding": !hasClientViewImage,
+			"enable_image_understanding": true,
 		})
 		route.injectedToolTypes["web_search"] = struct{}{}
 	}
@@ -402,6 +519,49 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 	route.hasXSearch = true
 	payload["tools"] = tools
 	return route
+}
+
+func aliasConsoleReservedFunctionTools(payload map[string]any, route *consoleHostedToolRoute) {
+	if route == nil {
+		return
+	}
+	tools, _ := payload["tools"].([]any)
+	if !hasConsoleToolType(tools, "web_search") || !hasConsoleFunctionTool(tools, consoleViewImageToolName) {
+		return
+	}
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeName, _ := tool["type"].(string)
+		name, _ := tool["name"].(string)
+		if strings.EqualFold(strings.TrimSpace(typeName), "function") && strings.EqualFold(strings.TrimSpace(name), consoleViewImageToolName) {
+			tool["name"] = consoleViewImageToolAlias
+			route.aliasedViewImage = true
+		}
+	}
+	if choice, ok := payload["tool_choice"].(map[string]any); ok {
+		typeName, _ := choice["type"].(string)
+		name, _ := choice["name"].(string)
+		if strings.EqualFold(strings.TrimSpace(typeName), "function") && strings.EqualFold(strings.TrimSpace(name), consoleViewImageToolName) {
+			choice["name"] = consoleViewImageToolAlias
+		}
+	}
+}
+
+func hasConsoleToolType(tools []any, target string) bool {
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeName, _ := tool["type"].(string)
+		if strings.EqualFold(strings.TrimSpace(typeName), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasConsoleFunctionTool(tools []any, target string) bool {
@@ -434,7 +594,9 @@ func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool
 		case "none", "auto":
 			payload["tool_choice"] = strings.ToLower(strings.TrimSpace(value))
 		case "required":
-			if !retainedClientTools {
+			if retainedClientTools {
+				payload["tool_choice"] = "required"
+			} else {
 				payload["tool_choice"] = "auto"
 			}
 		default:
@@ -448,6 +610,7 @@ func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool
 		return
 	}
 	typeName, _ := object["type"].(string)
+	typeName = strings.ToLower(strings.TrimSpace(typeName))
 	if typeName != "function" || !retainedClientTools {
 		payload["tool_choice"] = "auto"
 		return

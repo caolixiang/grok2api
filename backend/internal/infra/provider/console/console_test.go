@@ -358,7 +358,7 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	t.Run("forwards enable_image_search on web_search", func(t *testing.T) {
 		body, err := normalizeRequest([]byte(`{
 			"model":"grok-4.3",
-			"tools":[{"type":"web_search","enable_image_search":true,"custom":true}]
+			"tools":[{"type":"web_search","allowed_domains":["x.com","console.x.ai"],"enable_image_search":true,"custom":true}]
 		}`), spec)
 		if err != nil {
 			t.Fatal(err)
@@ -377,6 +377,10 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 		}
 		if webSearch["enable_image_search"] != true {
 			t.Fatalf("enable_image_search not forwarded: %#v", webSearch)
+		}
+		allowed, _ := webSearch["allowed_domains"].([]any)
+		if len(allowed) != 2 || allowed[0] != "x.com" || allowed[1] != "console.x.ai" {
+			t.Fatalf("allowed_domains not forwarded: %#v", webSearch)
 		}
 		if webSearch["custom"] != nil {
 			t.Fatalf("unknown field custom should be stripped: %#v", webSearch)
@@ -425,42 +429,23 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 		}
 	})
 
-	t.Run("drops invalid date formats", func(t *testing.T) {
-		body, err := normalizeRequest([]byte(`{
+	t.Run("rejects invalid date formats", func(t *testing.T) {
+		_, err := normalizeRequest([]byte(`{
 			"model":"grok-4.3",
 			"tools":[{"type":"x_search","from_date":"2026-7-01","to_date":"2026-02-30"}]
 		}`), spec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Fatal(err)
-		}
-		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
-		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
-			t.Fatalf("invalid dates should be dropped: %#v", xSearch)
-		}
-		if xSearch["type"] != "x_search" || xSearch["enable_video_understanding"] != true {
-			t.Fatalf("x_search defaults should remain: %#v", xSearch)
+		if err == nil || !strings.Contains(err.Error(), "ISO 8601") {
+			t.Fatalf("invalid date error = %v", err)
 		}
 	})
 
-	t.Run("drops inverted date range", func(t *testing.T) {
-		body, err := normalizeRequest([]byte(`{
+	t.Run("rejects inverted date range", func(t *testing.T) {
+		_, err := normalizeRequest([]byte(`{
 			"model":"grok-4.3",
 			"tools":[{"type":"x_search","from_date":"2026-07-24","to_date":"2026-07-23"}]
 		}`), spec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Fatal(err)
-		}
-		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
-		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
-			t.Fatalf("inverted range should drop both bounds: %#v", xSearch)
+		if err == nil || !strings.Contains(err.Error(), "不能晚于") {
+			t.Fatalf("inverted range error = %v", err)
 		}
 	})
 
@@ -479,6 +464,63 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
 		if xSearch["from_date"] != "2026-08-01" || xSearch["to_date"] != nil {
 			t.Fatalf("single bound = %#v", xSearch)
+		}
+	})
+
+	t.Run("forwards full x_search schema with ISO 8601 timestamps", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","allowed_x_handles":["xai","grok"],
+				"from_date":"2026-07-01T00:00:00Z","to_date":"2026-08-01T08:30:00+08:00",
+				"enable_image_understanding":true,"enable_video_understanding":false}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		handles, _ := xSearch["allowed_x_handles"].([]any)
+		if len(handles) != 2 || handles[0] != "xai" || handles[1] != "grok" ||
+			xSearch["from_date"] != "2026-07-01T00:00:00Z" || xSearch["to_date"] != "2026-08-01T08:30:00+08:00" ||
+			xSearch["enable_image_understanding"] != true || xSearch["enable_video_understanding"] != false {
+			t.Fatalf("x_search schema = %#v", xSearch)
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		tool string
+		want string
+	}{
+		{name: "web domain filters are exclusive", tool: `{"type":"web_search","allowed_domains":["x.com"],"excluded_domains":["spam.example"]}`, want: "不能同时设置 allowed_domains"},
+		{name: "x handle filters are exclusive", tool: `{"type":"x_search","allowed_x_handles":["xai"],"excluded_x_handles":["grok"]}`, want: "不能同时设置 allowed_x_handles"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := normalizeRequest([]byte(`{"model":"grok-4.3","tools":[`+test.tool+`]}`), spec)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("schema conflict error = %v", err)
+			}
+		})
+	}
+
+	t.Run("downgrades unsupported hosted search tool choice", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","allowed_x_handles":["xai"]}],
+			"tool_choice":{"type":"x_search"}
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["tool_choice"] != "auto" {
+			t.Fatalf("tool_choice = %#v", payload["tool_choice"])
 		}
 	})
 }
@@ -538,12 +580,12 @@ func TestNormalizeRequestAvoidsClientViewImageToolCollision(t *testing.T) {
 				t.Fatalf("tools = %#v", tools)
 			}
 			function, _ := tools[0].(map[string]any)
-			if toolIdentity(function) != "function:view_image" || function["parameters"] == nil {
+			if toolIdentity(function) != "function:"+consoleViewImageToolAlias || function["parameters"] == nil {
 				t.Fatalf("client view_image must be retained: %#v", function)
 			}
 			webSearch, _ := tools[1].(map[string]any)
-			if webSearch["type"] != "web_search" || webSearch["enable_image_understanding"] != false {
-				t.Fatalf("server view_image must be disabled: %#v", webSearch)
+			if webSearch["type"] != "web_search" || webSearch["enable_image_understanding"] != true {
+				t.Fatalf("web image understanding must remain enabled: %#v", webSearch)
 			}
 			xSearch, _ := tools[2].(map[string]any)
 			if xSearch["type"] != "x_search" {
@@ -620,6 +662,46 @@ func TestNormalizeRequestInjectsHostedToolsAfterProtocolConversion(t *testing.T)
 				t.Fatalf("Console hosted tools missing after %s conversion: %s", test.operation, normalized)
 			}
 		})
+	}
+}
+
+func TestNormalizeRequestPreservesSearchSchemaAfterChatConversion(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	converted, err := conversation.ConvertRequest([]byte(`{
+		"model":"Console/grok-4.5",
+		"messages":[{"role":"user","content":"latest xAI news"}],
+		"tools":[
+			{"type":"web_search","filters":{"allowed_domains":["x.com"]},"enable_image_search":true},
+			{"type":"x_search","excluded_x_handles":["spam"],"from_date":"2026-08-01T00:00:00Z","enable_image_understanding":true}
+		]
+	}`), spec.UpstreamModel, conversation.OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := normalizeRequest(converted, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(normalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("tools = %#v", tools)
+	}
+	webSearch, _ := tools[0].(map[string]any)
+	allowed, _ := webSearch["allowed_domains"].([]any)
+	if len(allowed) != 1 || allowed[0] != "x.com" || webSearch["enable_image_search"] != true {
+		t.Fatalf("web_search after chat conversion = %#v", webSearch)
+	}
+	xSearch, _ := tools[1].(map[string]any)
+	excluded, _ := xSearch["excluded_x_handles"].([]any)
+	if len(excluded) != 1 || excluded[0] != "spam" || xSearch["from_date"] != "2026-08-01T00:00:00Z" || xSearch["enable_image_understanding"] != true {
+		t.Fatalf("x_search after chat conversion = %#v", xSearch)
 	}
 }
 

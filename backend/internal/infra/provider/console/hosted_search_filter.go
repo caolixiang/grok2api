@@ -102,6 +102,7 @@ func (f *consoleHostedSearchFilter) filterJSON(body []byte) ([]byte, error) {
 	if err := f.filterEnvelope(payload); err != nil {
 		return nil, err
 	}
+	f.restoreReservedFunctionNames(payload)
 	return json.Marshal(payload)
 }
 
@@ -121,6 +122,7 @@ func (f *consoleHostedSearchFilter) filterEvent(data []byte) ([]byte, bool, erro
 		return nil, false, nil
 	}
 	f.compactOutputIndex(payload)
+	f.restoreReservedFunctionNames(payload)
 	filtered, err := json.Marshal(payload)
 	return filtered, true, err
 }
@@ -231,6 +233,45 @@ func isConsoleInternalXSearchName(name string) bool {
 	default:
 		return false
 	}
+}
+
+func (f *consoleHostedSearchFilter) restoreReservedFunctionNames(payload map[string]json.RawMessage) {
+	if f == nil || !f.route.aliasedViewImage {
+		return
+	}
+	for key, raw := range payload {
+		if emptyConsoleJSON(raw) {
+			continue
+		}
+		var value any
+		if json.Unmarshal(raw, &value) != nil || !restoreConsoleViewImageName(value) {
+			continue
+		}
+		payload[key] = consoleJSON(value)
+	}
+}
+
+func restoreConsoleViewImageName(value any) bool {
+	changed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		if name, ok := typed["name"].(string); ok && name == consoleViewImageToolAlias {
+			typed["name"] = consoleViewImageToolName
+			changed = true
+		}
+		for _, child := range typed {
+			if restoreConsoleViewImageName(child) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if restoreConsoleViewImageName(child) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 func (f *consoleHostedSearchFilter) recordDroppedItem(payload map[string]json.RawMessage, rawItem json.RawMessage) {

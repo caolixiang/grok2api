@@ -343,6 +343,15 @@ func convertChatWebSearchTool(tool map[string]any) (map[string]any, error) {
 	if len(resultFilters) > 0 {
 		converted["filters"] = resultFilters
 	}
+	for _, field := range []string{"enable_image_understanding", "enable_image_search"} {
+		if value, exists := tool[field]; exists {
+			enabled, ok := value.(bool)
+			if !ok {
+				return nil, fmt.Errorf("web_search %s 必须是布尔值", field)
+			}
+			converted[field] = enabled
+		}
+	}
 	return converted, nil
 }
 
