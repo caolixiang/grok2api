@@ -798,7 +798,7 @@ func TestNormalizeRequestPreservesMultiAgentDefaultsWithHostedTools(t *testing.T
 		t.Fatal(err)
 	}
 	reasoning, _ := payload["reasoning"].(map[string]any)
-	if payload["max_output_tokens"] != float64(1_000_000) || reasoning["summary"] != "detailed" || reasoning["effort"] != nil || payload["store"] != false {
+	if payload["max_output_tokens"] != float64(1_000_000) || reasoning["summary"] != "detailed" || reasoning["effort"] != "high" || payload["store"] != false {
 		t.Fatalf("multi-agent defaults = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)
@@ -831,7 +831,7 @@ func TestNormalizeRequestReasoningMetadataTracksOnlyExplicitCanonicalValues(t *t
 		want string
 	}{
 		{name: "absent default stays unaudited", body: `{"input":"hello"}`},
-		{name: "auto resolves to provider default", body: `{"input":"hello","reasoning":{"effort":"auto"}}`, want: "medium"},
+		{name: "auto resolves to provider default", body: `{"input":"hello","reasoning":{"effort":"auto"}}`, want: "high"},
 		{name: "max resolves to xhigh", body: `{"input":"hello","reasoning":{"effort":"max"}}`, want: "xhigh"},
 		{name: "arbitrary value is not persisted", body: `{"input":"hello","reasoning":{"effort":"customer@example.com"}}`},
 	}
@@ -996,7 +996,7 @@ func TestNormalizeRequestDefaultsAndPreservesConsoleReasoningSummary(t *testing.
 			name:        "responses defaults",
 			operation:   conversation.OperationResponses,
 			body:        `{"model":"public","input":"hello"}`,
-			wantEffort:  "medium",
+			wantEffort:  "high",
 			wantSummary: "detailed",
 		},
 		{
