@@ -19,6 +19,8 @@ const (
 // filterConsoleHostedSearchResponse hides xAI's completed native-search
 // subcalls. They are execution traces, not client tools; forwarding them makes
 // Responses clients try to execute x_user_search/x_keyword_search a second time.
+// Image generation stays visible because clients need its tool definition to
+// correlate the streamed image_generation_call lifecycle.
 func filterConsoleHostedSearchResponse(response *http.Response, streaming bool, route consoleHostedToolRoute) error {
 	if response == nil || response.Body == nil || (!route.hasXSearch && len(route.injectedToolTypes) == 0) {
 		return nil
@@ -182,7 +184,9 @@ func (f *consoleHostedSearchFilter) filterTools(envelope map[string]json.RawMess
 			Type string `json:"type"`
 		}
 		_ = json.Unmarshal(tool, &value)
-		if _, injected := f.route.injectedToolTypes[strings.ToLower(strings.TrimSpace(value.Type))]; !injected {
+		kind := strings.ToLower(strings.TrimSpace(value.Type))
+		_, injected := f.route.injectedToolTypes[kind]
+		if !injected || kind == "image_generation" {
 			filtered = append(filtered, tool)
 		}
 	}

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -44,10 +45,10 @@ func TestFilterConsoleHostedSearchResponseJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, `"id":"internal"`) || strings.Contains(text, `"type":"web_search"`) || strings.Contains(text, `"type":"x_search"`) || strings.Contains(text, `"type":"image_generation","action":"auto"`) {
+	if strings.Contains(text, `"id":"internal"`) || strings.Contains(text, `"type":"web_search"`) || strings.Contains(text, `"type":"x_search"`) {
 		t.Fatalf("hosted search trace leaked: %s", text)
 	}
-	if !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"type":"function"`) || !strings.Contains(text, `"type":"image_generation_call"`) || !strings.Contains(text, `"result":"aW1hZ2U="`) {
+	if !strings.Contains(text, `"id":"client"`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"type":"function"`) || !strings.Contains(text, `"type":"image_generation","action":"auto"`) || !strings.Contains(text, `"type":"image_generation_call"`) || !strings.Contains(text, `"result":"aW1hZ2U="`) {
 		t.Fatalf("client output was removed: %s", text)
 	}
 	if response.ContentLength != int64(len(data)) || response.Header.Get("Content-Length") != strconv.Itoa(len(data)) {
@@ -65,14 +66,24 @@ func TestFilterConsoleHostedSearchResponseStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","tools":[{"type":"web_search"},{"type":"x_search"},{"type":"image_generation","action":"auto"}],"output":[]}}`, "",
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"xs_call-1","name":"x_user_search"}}`, "",
 		`event: response.custom_tool_call_input.delta`,
 		`data: {"type":"response.custom_tool_call_input.delta","output_index":1,"item_id":"ctc_1","delta":"{}"}`, "",
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"message","id":"msg_1"}}`, "",
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":3,"item":{"type":"image_generation_call","id":"ig_1","status":"in_progress","result":null}}`, "",
+		`event: response.image_generation_call.in_progress`,
+		`data: {"type":"response.image_generation_call.in_progress","output_index":3,"item_id":"ig_1"}`, "",
+		`event: response.image_generation_call.generating`,
+		`data: {"type":"response.image_generation_call.generating","output_index":3,"item_id":"ig_1"}`, "",
 		`event: response.image_generation_call.completed`,
 		`data: {"type":"response.image_generation_call.completed","output_index":3,"item_id":"ig_1"}`, "",
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":3,"item":{"type":"image_generation_call","id":"ig_1","status":"completed","result":"aW1hZ2U="}}`, "",
 		`event: response.completed`,
 		`data: {"type":"response.completed","response":{"tools":[{"type":"web_search"},{"type":"x_search"},{"type":"image_generation","action":"auto"}],"output":[{"type":"custom_tool_call","id":"ctc_1","call_id":"xs_call-1","name":"x_user_search"},{"type":"message","id":"msg_1"},{"type":"image_generation_call","id":"ig_1","status":"completed","result":"aW1hZ2U="}]}}`, "", "",
 	}, "\n")
@@ -85,11 +96,37 @@ func TestFilterConsoleHostedSearchResponseStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, "x_user_search") || strings.Contains(text, "ctc_1") || strings.Contains(text, `"type":"x_search"`) || strings.Contains(text, `"type":"web_search"`) || strings.Contains(text, `"type":"image_generation","action":"auto"`) {
+	if strings.Contains(text, "x_user_search") || strings.Contains(text, "ctc_1") || strings.Contains(text, `"type":"x_search"`) || strings.Contains(text, `"type":"web_search"`) {
 		t.Fatalf("hosted search stream trace leaked:\n%s", text)
 	}
-	if !strings.Contains(text, `"output_index":1`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"type":"image_generation_call"`) || !strings.Contains(text, `"result":"aW1hZ2U="`) {
+	if strings.Count(text, `"type":"image_generation","action":"auto"`) != 2 ||
+		strings.Count(text, `"type":"response.image_generation_call.in_progress"`) != 1 ||
+		strings.Count(text, `"type":"response.image_generation_call.generating"`) != 1 ||
+		strings.Count(text, `"type":"response.image_generation_call.completed"`) != 1 ||
+		!strings.Contains(text, `"output_index":1`) || !strings.Contains(text, `"id":"msg_1"`) || !strings.Contains(text, `"type":"image_generation_call"`) || !strings.Contains(text, `"result":"aW1hZ2U="`) {
 		t.Fatalf("remaining output was not preserved and compacted:\n%s", text)
+	}
+	imageDone := false
+	if err := consumeConsoleSSE(strings.NewReader(text), func(event consoleSSEEvent) error {
+		var payload struct {
+			Type        string `json:"type"`
+			OutputIndex int    `json:"output_index"`
+			Item        struct {
+				ID     string `json:"id"`
+				Type   string `json:"type"`
+				Status string `json:"status"`
+				Result string `json:"result"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(event.dataBytes(), &payload) == nil &&
+			payload.Type == "response.output_item.done" && payload.OutputIndex == 2 &&
+			payload.Item.ID == "ig_1" && payload.Item.Type == "image_generation_call" &&
+			payload.Item.Status == "completed" && payload.Item.Result == "aW1hZ2U=" {
+			imageDone = true
+		}
+		return nil
+	}); err != nil || !imageDone {
+		t.Fatalf("completed image output item missing (err=%v):\n%s", err, text)
 	}
 	if response.ContentLength != -1 || response.Header.Get("Content-Length") != "" {
 		t.Fatalf("stream content length = %d header=%q", response.ContentLength, response.Header.Get("Content-Length"))
