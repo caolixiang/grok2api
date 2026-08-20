@@ -65,7 +65,6 @@ type consoleHostedSearchFilter struct {
 	droppedOutputIndexes map[int]struct{}
 	droppedItemIDs       map[string]struct{}
 	localizedImages      map[string]consoleLocalizedImage
-	localizedCodeCalls   map[string]consoleLocalizedImage
 	pendingMedia         []consoleLocalizedImage
 	mediaTargets         map[string]string
 	messageMedia         map[string][]string
@@ -89,7 +88,6 @@ func newConsoleHostedSearchFilter(route consoleHostedToolRoute, assets provider.
 		droppedOutputIndexes: make(map[int]struct{}),
 		droppedItemIDs:       make(map[string]struct{}),
 		localizedImages:      make(map[string]consoleLocalizedImage),
-		localizedCodeCalls:   make(map[string]consoleLocalizedImage),
 		mediaTargets:         make(map[string]string),
 		messageMedia:         make(map[string][]string),
 	}
@@ -152,21 +150,6 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 				return nil, err
 			}
 			f.pendingMedia = append(f.pendingMedia, localized)
-		}
-		f.recordDroppedItem(payload, item)
-		f.recordRemovedSequence(hasSequence)
-		return nil, nil
-	}
-
-	if f.isInjectedCodeEvent(eventType, item) {
-		if eventType == "response.output_item.done" && f.isInjectedCodeCall(item) {
-			localized, found, err := f.localizeCodeCall(ctx, item)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				f.pendingMedia = append(f.pendingMedia, localized)
-			}
 		}
 		f.recordDroppedItem(payload, item)
 		f.recordRemovedSequence(hasSequence)
@@ -353,16 +336,6 @@ func (f *consoleHostedSearchFilter) filterOutput(ctx context.Context, envelope m
 			localized = append(localized, image)
 			continue
 		}
-		if f.isInjectedCodeCall(item) {
-			image, found, err := f.localizeCodeCall(ctx, item)
-			if err != nil {
-				return err
-			}
-			if found {
-				localized = append(localized, image)
-			}
-			continue
-		}
 		if f.isInternalCall(item) {
 			continue
 		}
@@ -547,11 +520,7 @@ func (f *consoleHostedSearchFilter) filterTools(envelope map[string]json.RawMess
 		}
 		_ = json.Unmarshal(tool, &value)
 		kind := strings.ToLower(strings.TrimSpace(value.Type))
-		injectedKind := kind
-		if kind == "code_interpreter" {
-			injectedKind = "code_execution"
-		}
-		_, injected := f.route.injectedToolTypes[injectedKind]
+		_, injected := f.route.injectedToolTypes[kind]
 		if !injected {
 			filtered = append(filtered, tool)
 		}
@@ -578,10 +547,6 @@ func (f *consoleHostedSearchFilter) isInternalCall(raw json.RawMessage) bool {
 		return false
 	}
 	kind := strings.TrimSpace(item.Type)
-	if kind == "code_interpreter_call" {
-		_, injected := f.route.injectedToolTypes["code_execution"]
-		return injected
-	}
 	if kind == "web_search_call" {
 		_, injected := f.route.injectedToolTypes["web_search"]
 		return injected
@@ -606,21 +571,6 @@ func (f *consoleHostedSearchFilter) isInjectedImageCall(raw json.RawMessage) boo
 	}
 	var item consoleSearchCall
 	return json.Unmarshal(raw, &item) == nil && item.Type == "image_generation_call"
-}
-
-func (f *consoleHostedSearchFilter) isInjectedCodeEvent(eventType string, item json.RawMessage) bool {
-	if _, injected := f.route.injectedToolTypes["code_execution"]; !injected {
-		return false
-	}
-	return strings.HasPrefix(eventType, "response.code_interpreter_call") || f.isInjectedCodeCall(item)
-}
-
-func (f *consoleHostedSearchFilter) isInjectedCodeCall(raw json.RawMessage) bool {
-	if _, injected := f.route.injectedToolTypes["code_execution"]; !injected {
-		return false
-	}
-	var item consoleSearchCall
-	return json.Unmarshal(raw, &item) == nil && item.Type == "code_interpreter_call"
 }
 
 func (f *consoleHostedSearchFilter) localizeImageCall(ctx context.Context, raw json.RawMessage) (consoleLocalizedImage, error) {
@@ -664,110 +614,6 @@ func consoleImageMessageID(toolID string) string {
 		return "msg_grok2api_image_" + suffix
 	}
 	return "msg_grok2api_image_" + toolID
-}
-
-type consoleCodeInterpreterCall struct {
-	ID      string `json:"id"`
-	Outputs []struct {
-		Type string          `json:"type"`
-		Logs json.RawMessage `json:"logs"`
-	} `json:"outputs"`
-}
-
-type consoleCodeExecutionLog struct {
-	OutputFiles []struct {
-		FileName string          `json:"file_name"`
-		MIMEType string          `json:"mime_type"`
-		Data     json.RawMessage `json:"data"`
-	} `json:"output_files"`
-}
-
-func (f *consoleHostedSearchFilter) localizeCodeCall(ctx context.Context, raw json.RawMessage) (consoleLocalizedImage, bool, error) {
-	var item consoleCodeInterpreterCall
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return consoleLocalizedImage{}, false, fmt.Errorf("解析 Console 代码工具结果: %w", err)
-	}
-	item.ID = strings.TrimSpace(item.ID)
-	if localized, exists := f.localizedCodeCalls[item.ID]; exists {
-		return localized, true, nil
-	}
-
-	images := make([][]byte, 0)
-	for _, output := range item.Outputs {
-		if output.Type != "logs" || emptyConsoleJSON(output.Logs) {
-			continue
-		}
-		logs := output.Logs
-		var encodedLogs string
-		if json.Unmarshal(output.Logs, &encodedLogs) == nil {
-			logs = json.RawMessage(encodedLogs)
-		}
-		var log consoleCodeExecutionLog
-		if json.Unmarshal(logs, &log) != nil {
-			continue
-		}
-		for _, file := range log.OutputFiles {
-			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(file.MIMEType)), "image/") {
-				continue
-			}
-			image, err := decodeConsoleCodeOutputFile(file.Data)
-			if err != nil {
-				return consoleLocalizedImage{}, false, fmt.Errorf("解析 Console 代码工具图片 %q: %w", file.FileName, err)
-			}
-			images = append(images, image)
-		}
-	}
-	if len(images) == 0 {
-		return consoleLocalizedImage{}, false, nil
-	}
-	if f.assets == nil {
-		return consoleLocalizedImage{}, false, fmt.Errorf("Console Responses 自动代码工具需要媒体存储")
-	}
-	links := make([]string, 0, len(images))
-	for _, image := range images {
-		asset, err := f.assets.SaveImage(ctx, image)
-		if err != nil {
-			return consoleLocalizedImage{}, false, fmt.Errorf("保存 Console Responses 代码工具图片: %w", err)
-		}
-		links = append(links, fmt.Sprintf("![Generated chart](%s)", f.assets.PublicImageURL(asset.ID)))
-	}
-	localized := consoleLocalizedImage{
-		messageID: consoleCodeMessageID(item.ID),
-		text:      strings.Join(links, "\n\n"),
-	}
-	f.localizedCodeCalls[item.ID] = localized
-	return localized, true, nil
-}
-
-func decodeConsoleCodeOutputFile(raw json.RawMessage) ([]byte, error) {
-	if emptyConsoleJSON(raw) {
-		return nil, fmt.Errorf("图片数据为空")
-	}
-	var bytesValue []byte
-	if err := json.Unmarshal(raw, &bytesValue); err == nil && len(bytesValue) > 0 {
-		return bytesValue, nil
-	}
-	var encoded string
-	if err := json.Unmarshal(raw, &encoded); err != nil {
-		return nil, fmt.Errorf("图片数据格式不受支持")
-	}
-	encoded = strings.TrimSpace(encoded)
-	if prefix, value, found := strings.Cut(encoded, ","); found && strings.HasPrefix(strings.ToLower(prefix), "data:image/") {
-		encoded = value
-	}
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(decoded) == 0 {
-		return nil, fmt.Errorf("图片 Base64 数据无效")
-	}
-	return decoded, nil
-}
-
-func consoleCodeMessageID(toolID string) string {
-	toolID = strings.TrimSpace(toolID)
-	if suffix, found := strings.CutPrefix(toolID, "ci_"); found {
-		return "msg_grok2api_code_" + suffix
-	}
-	return "msg_grok2api_code_" + toolID
 }
 
 func consoleImageMessageItem(image consoleLocalizedImage) map[string]any {

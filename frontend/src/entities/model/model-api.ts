@@ -23,7 +23,7 @@ const modelRouteValidator = hasShape({
   provider: isOneOf("grok_build", "grok_web", "grok_console"),
   upstreamModel: isString,
   capability: isOneOf("responses", "chat", "image", "image_edit", "video", "tts", "stt", "realtime"),
-  serverTools: isOptional(isArrayOf(isOneOf("web_search", "x_search", "image_generation", "code_execution"))),
+  serverTools: isOptional(isArrayOf(isOneOf("web_search", "x_search", "image_generation"))),
   origin: isOneOf("catalog", "discovered", "manual"),
   enabled: isBoolean,
   accountIds: isArrayOf(isString),
@@ -37,7 +37,7 @@ const modelRouteValidator = hasShape({
 });
 const decodeModelRoute = createObjectDecoder<ModelRouteDTO>("model route", {
   id: isString, publicId: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), upstreamModel: isString,
-  capability: isOneOf("responses", "chat", "image", "image_edit", "video", "tts", "stt", "realtime"), serverTools: isOptional(isArrayOf(isOneOf("web_search", "x_search", "image_generation", "code_execution"))), origin: isOneOf("catalog", "discovered", "manual"),
+  capability: isOneOf("responses", "chat", "image", "image_edit", "video", "tts", "stt", "realtime"), serverTools: isOptional(isArrayOf(isOneOf("web_search", "x_search", "image_generation"))), origin: isOneOf("catalog", "discovered", "manual"),
   enabled: isBoolean, accountIds: isArrayOf(isString), bindingMode: isBoolean, supportedAccounts: isNumber,
   syncedAccounts: isNumber, totalAccounts: isNumber, capabilityKnown: isBoolean, available: isBoolean, lastSyncedAt: isOptional(isString),
 });

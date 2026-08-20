@@ -26,7 +26,6 @@ func (a *Adapter) Definition() provider.Definition {
 			provider.ServerToolWebSearch,
 			provider.ServerToolXSearch,
 			provider.ServerToolImageGeneration,
-			provider.ServerToolCodeExecution,
 		},
 		Quota: provider.QuotaRemoteWindow,
 		Credential: provider.CredentialSurface{
