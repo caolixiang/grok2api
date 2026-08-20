@@ -282,6 +282,7 @@ func normalizeConsoleTools(payload map[string]any) (bool, error) {
 	}
 	result := make([]any, 0, len(tools))
 	retainedClientTools := false
+	seenCodeExecution := false
 	for index, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
 		if !ok {
@@ -385,7 +386,17 @@ func normalizeConsoleTools(payload map[string]any) (bool, error) {
 			}
 			result = append(result, clean)
 			retainedClientTools = true
-		case "mcp", "shell", "collections_search", "file_search", "code_execution", "code_interpreter":
+		case "code_execution", "code_interpreter":
+			// xAI accepts code_execution as the request tool type and emits
+			// code_interpreter_call output items while the hosted tool runs.
+			// Normalize the common alias and collapse duplicates before the
+			// Console defaults are mounted.
+			if !seenCodeExecution {
+				result = append(result, map[string]any{"type": "code_execution"})
+				seenCodeExecution = true
+			}
+			retainedClientTools = true
+		case "mcp", "shell", "collections_search", "file_search":
 			// These are native xAI Responses tool variants. Keep their payloads,
 			// while namespace/tool_search remain client-side abstractions and are
 			// intentionally omitted instead of causing an upstream 400.
@@ -498,6 +509,7 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 	seenWebSearch := false
 	seenXSearch := false
 	seenImageGeneration := false
+	seenCodeExecution := false
 	for _, rawTool := range tools {
 		identity := strings.ToLower(strings.TrimSpace(toolIdentity(rawTool)))
 		switch identity {
@@ -507,6 +519,8 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 			seenXSearch = true
 		case "image_generation":
 			seenImageGeneration = true
+		case "code_execution":
+			seenCodeExecution = true
 		default:
 			if name, ok := strings.CutPrefix(identity, "function:"); ok && name != "" {
 				route.clientDeclaredTools[name] = struct{}{}
@@ -533,6 +547,10 @@ func injectConsoleHostedTools(payload map[string]any) consoleHostedToolRoute {
 			"action": "auto",
 		})
 		route.injectedToolTypes["image_generation"] = struct{}{}
+	}
+	if !seenCodeExecution {
+		tools = append(tools, map[string]any{"type": "code_execution"})
+		route.injectedToolTypes["code_execution"] = struct{}{}
 	}
 	route.hasXSearch = true
 	payload["tools"] = tools

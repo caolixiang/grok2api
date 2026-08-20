@@ -33,11 +33,12 @@ const (
 	ServerToolWebSearch       ServerTool = "web_search"
 	ServerToolXSearch         ServerTool = "x_search"
 	ServerToolImageGeneration ServerTool = "image_generation"
+	ServerToolCodeExecution   ServerTool = "code_execution"
 )
 
 func validServerTool(value ServerTool) bool {
 	switch value {
-	case ServerToolWebSearch, ServerToolXSearch, ServerToolImageGeneration:
+	case ServerToolWebSearch, ServerToolXSearch, ServerToolImageGeneration, ServerToolCodeExecution:
 		return true
 	default:
 		return false

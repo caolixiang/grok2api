@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { AudioLines, AtSign, Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, Mic, MoreHorizontal, Paintbrush, Pencil, Plus, Radio, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
+import { AudioLines, AtSign, Clapperboard, Code2, Image as ImageIcon, MessagesSquare, MessageSquareText, Mic, MoreHorizontal, Paintbrush, Pencil, Plus, Radio, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -474,7 +474,9 @@ function ModelCapabilities({ capabilities, serverTools }: { capabilities: ModelD
           ? { label: "Web Search", icon: Search, color: "text-emerald-600 dark:text-emerald-400" }
           : tool === "x_search"
             ? { label: "X Search", icon: AtSign, color: "text-sky-600 dark:text-sky-400" }
-            : { label: "Image Generation", icon: ImageIcon, color: "text-rose-600 dark:text-rose-400" };
+            : tool === "image_generation"
+              ? { label: "Image Generation", icon: ImageIcon, color: "text-rose-600 dark:text-rose-400" }
+              : { label: "Code Execution", icon: Code2, color: "text-amber-600 dark:text-amber-400" };
         const Icon = metadata.icon;
         return (
           <Tooltip key={tool}>
