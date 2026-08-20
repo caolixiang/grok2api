@@ -206,7 +206,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	}
 	responsesOperation := request.Operation == "" || request.Operation == conversation.OperationResponses
 	if responsesOperation && response.StatusCode >= 200 && response.StatusCode < 300 {
-		if err := filterConsoleHostedSearchResponse(response, request.Streaming, hostedToolRoute); err != nil {
+		if err := filterConsoleHostedSearchResponse(ctx, response, request.Streaming, hostedToolRoute, a.assets); err != nil {
 			_ = response.Body.Close()
 			release()
 			return nil, err
