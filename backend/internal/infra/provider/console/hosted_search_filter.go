@@ -66,6 +66,9 @@ type consoleHostedSearchFilter struct {
 	droppedItemIDs       map[string]struct{}
 	localizedImages      map[string]consoleLocalizedImage
 	localizedCodeCalls   map[string]consoleLocalizedImage
+	pendingMedia         []consoleLocalizedImage
+	mediaTargets         map[string]string
+	messageMedia         map[string][]string
 	sequenceAdjustment   int
 }
 
@@ -87,6 +90,8 @@ func newConsoleHostedSearchFilter(route consoleHostedToolRoute, assets provider.
 		droppedItemIDs:       make(map[string]struct{}),
 		localizedImages:      make(map[string]consoleLocalizedImage),
 		localizedCodeCalls:   make(map[string]consoleLocalizedImage),
+		mediaTargets:         make(map[string]string),
+		messageMedia:         make(map[string][]string),
 	}
 }
 
@@ -135,6 +140,10 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 	var eventType string
 	_ = json.Unmarshal(payload["type"], &eventType)
 	item := payload["item"]
+	terminalMedia, err := f.prepareTerminalMedia(eventType, payload)
+	if err != nil {
+		return nil, err
+	}
 
 	if f.isInjectedImageEvent(eventType, item) {
 		if eventType == "response.output_item.done" && f.isInjectedImageCall(item) {
@@ -142,12 +151,9 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 			if err != nil {
 				return nil, err
 			}
-			outputIndex, _ := consoleJSONInt(payload["output_index"])
-			outputIndex = f.compactedOutputIndex(outputIndex)
-			events := consoleImageMessageEvents(localized, outputIndex)
-			f.numberReplacementEvents(events, sequence, hasSequence)
-			return events, nil
+			f.pendingMedia = append(f.pendingMedia, localized)
 		}
+		f.recordDroppedItem(payload, item)
 		f.recordRemovedSequence(hasSequence)
 		return nil, nil
 	}
@@ -159,14 +165,10 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 				return nil, err
 			}
 			if found {
-				outputIndex, _ := consoleJSONInt(payload["output_index"])
-				outputIndex = f.compactedOutputIndex(outputIndex)
-				events := consoleImageMessageEvents(localized, outputIndex)
-				f.numberReplacementEvents(events, sequence, hasSequence)
-				return events, nil
+				f.pendingMedia = append(f.pendingMedia, localized)
 			}
-			f.recordDroppedItem(payload, item)
 		}
+		f.recordDroppedItem(payload, item)
 		f.recordRemovedSequence(hasSequence)
 		return nil, nil
 	}
@@ -184,7 +186,32 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 		return nil, nil
 	}
 	f.compactOutputIndex(payload)
+	f.appendMediaToTerminalPayload(eventType, payload)
 	f.restoreReservedFunctionNames(payload)
+	if terminalMedia != nil {
+		filtered, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		event.setData(filtered)
+		outputIndex := consoleMessageOutputIndex(payload, terminalMedia.messageID)
+		events := append(consoleImageMessageEvents(*terminalMedia, outputIndex), event)
+		f.numberReplacementEvents(events, sequence, hasSequence)
+		return events, nil
+	}
+	mediaDelta := f.attachPendingMediaToTextDone(eventType, payload)
+	if mediaDelta != nil {
+		filtered, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		event.setData(filtered)
+		deltaType, _ := mediaDelta["type"].(string)
+		deltaData, _ := json.Marshal(mediaDelta)
+		events := []consoleSSEEvent{{event: deltaType, data: []string{string(deltaData)}}, event}
+		f.numberReplacementEvents(events, sequence, hasSequence)
+		return events, nil
+	}
 	if hasSequence {
 		payload["sequence_number"] = consoleJSON(sequence + f.sequenceAdjustment)
 	}
@@ -194,6 +221,64 @@ func (f *consoleHostedSearchFilter) filterStreamEvent(ctx context.Context, event
 	}
 	event.setData(filtered)
 	return []consoleSSEEvent{event}, nil
+}
+
+func (f *consoleHostedSearchFilter) prepareTerminalMedia(eventType string, payload map[string]json.RawMessage) (*consoleLocalizedImage, error) {
+	if eventType != "response.completed" || len(f.pendingMedia) == 0 {
+		return nil, nil
+	}
+	media := make([]string, 0, len(f.pendingMedia))
+	for _, localized := range f.pendingMedia {
+		media = append(media, localized.text)
+	}
+	terminal := consoleLocalizedImage{
+		messageID: "msg_grok2api_media_final",
+		text:      strings.Join(media, "\n\n"),
+	}
+	for _, localized := range f.pendingMedia {
+		f.mediaTargets[localized.messageID] = terminal.messageID
+	}
+	f.pendingMedia = nil
+
+	target := payload
+	if raw := payload["response"]; !emptyConsoleJSON(raw) {
+		var response map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &response); err != nil {
+			return nil, fmt.Errorf("解析 Console Responses 完成事件: %w", err)
+		}
+		target = response
+		defer func() { payload["response"] = consoleJSON(response) }()
+	}
+	var output []json.RawMessage
+	if raw := target["output"]; !emptyConsoleJSON(raw) {
+		if err := json.Unmarshal(raw, &output); err != nil {
+			return nil, fmt.Errorf("解析 Console Responses 完成事件 output: %w", err)
+		}
+	}
+	output = append(output, consoleJSON(consoleImageMessageItem(terminal)))
+	target["output"] = consoleJSON(output)
+	return &terminal, nil
+}
+
+func consoleMessageOutputIndex(payload map[string]json.RawMessage, messageID string) int {
+	target := payload
+	if raw := payload["response"]; !emptyConsoleJSON(raw) {
+		var response map[string]json.RawMessage
+		if json.Unmarshal(raw, &response) == nil {
+			target = response
+		}
+	}
+	var output []json.RawMessage
+	_ = json.Unmarshal(target["output"], &output)
+	for index, raw := range output {
+		var item struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &item) == nil && item.ID == messageID {
+			return index
+		}
+	}
+	return len(output)
 }
 
 func (f *consoleHostedSearchFilter) isInjectedImageEvent(eventType string, item json.RawMessage) bool {
@@ -258,22 +343,23 @@ func (f *consoleHostedSearchFilter) filterOutput(ctx context.Context, envelope m
 		return fmt.Errorf("解析 Console Responses output 失败")
 	}
 	filtered := make([]json.RawMessage, 0, len(output))
+	localized := make([]consoleLocalizedImage, 0)
 	for _, item := range output {
 		if f.isInjectedImageCall(item) {
-			localized, err := f.localizeImageCall(ctx, item)
+			image, err := f.localizeImageCall(ctx, item)
 			if err != nil {
 				return err
 			}
-			filtered = append(filtered, consoleJSON(consoleImageMessageItem(localized)))
+			localized = append(localized, image)
 			continue
 		}
 		if f.isInjectedCodeCall(item) {
-			localized, found, err := f.localizeCodeCall(ctx, item)
+			image, found, err := f.localizeCodeCall(ctx, item)
 			if err != nil {
 				return err
 			}
 			if found {
-				filtered = append(filtered, consoleJSON(consoleImageMessageItem(localized)))
+				localized = append(localized, image)
 			}
 			continue
 		}
@@ -282,8 +368,168 @@ func (f *consoleHostedSearchFilter) filterOutput(ctx context.Context, envelope m
 		}
 		filtered = append(filtered, item)
 	}
+	filtered = f.mergeLocalizedMediaIntoOutput(filtered, localized)
 	envelope["output"] = consoleJSON(filtered)
 	return nil
+}
+
+func (f *consoleHostedSearchFilter) attachPendingMediaToTextDone(eventType string, payload map[string]json.RawMessage) map[string]any {
+	if eventType != "response.output_text.done" || len(f.pendingMedia) == 0 {
+		return nil
+	}
+	var itemID string
+	_ = json.Unmarshal(payload["item_id"], &itemID)
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil
+	}
+	media := make([]string, 0, len(f.pendingMedia))
+	for _, localized := range f.pendingMedia {
+		media = append(media, localized.text)
+		f.mediaTargets[localized.messageID] = itemID
+		f.messageMedia[itemID] = append(f.messageMedia[itemID], localized.text)
+	}
+	f.pendingMedia = nil
+	mediaText := strings.Join(media, "\n\n")
+
+	var text string
+	_ = json.Unmarshal(payload["text"], &text)
+	delta := mediaText
+	if strings.TrimSpace(text) != "" {
+		delta = "\n\n" + mediaText
+	}
+	payload["text"] = consoleJSON(appendConsoleMediaText(text, mediaText))
+
+	outputIndex, _ := consoleJSONInt(payload["output_index"])
+	contentIndex, _ := consoleJSONInt(payload["content_index"])
+	return map[string]any{
+		"type":          "response.output_text.delta",
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"delta":         delta,
+		"logprobs":      []any{},
+	}
+}
+
+func (f *consoleHostedSearchFilter) appendMediaToTerminalPayload(eventType string, payload map[string]json.RawMessage) {
+	switch eventType {
+	case "response.content_part.done":
+		var itemID string
+		_ = json.Unmarshal(payload["item_id"], &itemID)
+		mediaText := strings.Join(f.messageMedia[strings.TrimSpace(itemID)], "\n\n")
+		if mediaText == "" {
+			return
+		}
+		var part map[string]any
+		if json.Unmarshal(payload["part"], &part) != nil {
+			return
+		}
+		text, _ := part["text"].(string)
+		part["text"] = appendConsoleMediaText(text, mediaText)
+		payload["part"] = consoleJSON(part)
+	case "response.output_item.done":
+		var item map[string]any
+		if json.Unmarshal(payload["item"], &item) != nil {
+			return
+		}
+		itemID, _ := item["id"].(string)
+		mediaText := strings.Join(f.messageMedia[strings.TrimSpace(itemID)], "\n\n")
+		if mediaText == "" || !appendConsoleMediaToMessage(item, mediaText) {
+			return
+		}
+		payload["item"] = consoleJSON(item)
+	}
+}
+
+func (f *consoleHostedSearchFilter) mergeLocalizedMediaIntoOutput(output []json.RawMessage, localized []consoleLocalizedImage) []json.RawMessage {
+	if len(localized) == 0 {
+		return output
+	}
+	byTarget := make(map[string][]string)
+	unassigned := make([]string, 0)
+	for _, image := range localized {
+		if target := strings.TrimSpace(f.mediaTargets[image.messageID]); target != "" {
+			byTarget[target] = append(byTarget[target], image.text)
+		} else {
+			unassigned = append(unassigned, image.text)
+		}
+	}
+
+	lastAssistant := ""
+	for _, raw := range output {
+		var item struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(raw, &item) == nil && item.Type == "message" && item.Role == "assistant" {
+			lastAssistant = strings.TrimSpace(item.ID)
+		}
+	}
+	if len(unassigned) > 0 && lastAssistant != "" {
+		byTarget[lastAssistant] = append(byTarget[lastAssistant], unassigned...)
+		unassigned = nil
+	}
+
+	merged := make([]json.RawMessage, 0, len(output)+1)
+	for _, raw := range output {
+		var item map[string]any
+		if json.Unmarshal(raw, &item) != nil {
+			merged = append(merged, raw)
+			continue
+		}
+		itemID, _ := item["id"].(string)
+		mediaText := strings.Join(byTarget[strings.TrimSpace(itemID)], "\n\n")
+		if mediaText != "" {
+			appendConsoleMediaToMessage(item, mediaText)
+			raw = consoleJSON(item)
+		}
+		merged = append(merged, raw)
+	}
+	if len(unassigned) > 0 {
+		merged = append(merged, consoleJSON(consoleImageMessageItem(consoleLocalizedImage{
+			messageID: "msg_grok2api_media_final",
+			text:      strings.Join(unassigned, "\n\n"),
+		})))
+	}
+	return merged
+}
+
+func appendConsoleMediaToMessage(item map[string]any, mediaText string) bool {
+	if item["type"] != "message" || item["role"] != "assistant" {
+		return false
+	}
+	content, ok := item["content"].([]any)
+	if !ok {
+		return false
+	}
+	for index := len(content) - 1; index >= 0; index-- {
+		part, ok := content[index].(map[string]any)
+		if !ok || part["type"] != "output_text" {
+			continue
+		}
+		text, _ := part["text"].(string)
+		part["text"] = appendConsoleMediaText(text, mediaText)
+		content[index] = part
+		item["content"] = content
+		return true
+	}
+	item["content"] = append(content, map[string]any{
+		"type": "output_text", "text": mediaText, "annotations": []any{}, "logprobs": []any{},
+	})
+	return true
+}
+
+func appendConsoleMediaText(text, mediaText string) string {
+	mediaText = strings.TrimSpace(mediaText)
+	if mediaText == "" || strings.Contains(text, mediaText) {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		return mediaText
+	}
+	return text + "\n\n" + mediaText
 }
 
 func (f *consoleHostedSearchFilter) filterTools(envelope map[string]json.RawMessage) error {
